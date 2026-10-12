@@ -13,18 +13,15 @@ export function activate(context: vscode.ExtensionContext) {
         const treeDataProvider = new Ros2TreeDataProvider();
         vscode.window.registerTreeDataProvider('ros2View', treeDataProvider);
 
-        // Clean up polling interval when extension deactivates
         context.subscriptions.push({
             dispose: () => treeDataProvider.dispose()
         });
 
-        // Command for the header Back button
         const backDisposable = vscode.commands.registerCommand('ros2-assistant.goBack', () => {
             treeDataProvider.goBack();
         });
         context.subscriptions.push(backDisposable);
 
-        // Command triggered when clicking a main menu button
         const selectDisposable = vscode.commands.registerCommand('ros2-assistant.selectItem', (viewType: string) => {
             treeDataProvider.navigateTo(viewType);
         });
@@ -40,10 +37,13 @@ class Ros2TreeItem extends vscode.TreeItem {
     constructor(
         public readonly label: string,
         public readonly collapsibleState: vscode.TreeItemCollapsibleState,
-        public readonly command?: vscode.Command
+        public readonly command?: vscode.Command,
+        public readonly iconPath?: vscode.ThemeIcon
     ) {
         super(label, collapsibleState);
         this.command = command;
+        this.iconPath = iconPath;
+        this.tooltip = label;
     }
 }
 
@@ -71,30 +71,49 @@ class Ros2TreeDataProvider implements vscode.TreeDataProvider<Ros2TreeItem>, vsc
                     command: 'ros2-assistant.selectItem',
                     title: 'Select Node View',
                     arguments: ['nodes']
-                }),
+                }, new vscode.ThemeIcon('server')),
                 new Ros2TreeItem('list topics', vscode.TreeItemCollapsibleState.None, {
                     command: 'ros2-assistant.selectItem',
                     title: 'Select Topics View',
                     arguments: ['topics']
-                }),
+                }, new vscode.ThemeIcon('broadcast')),
                 new Ros2TreeItem('list services', vscode.TreeItemCollapsibleState.None, {
                     command: 'ros2-assistant.selectItem',
                     title: 'Select Services View',
                     arguments: ['services']
-                }),
+                }, new vscode.ThemeIcon('symbol-method')),
                 new Ros2TreeItem('list actions', vscode.TreeItemCollapsibleState.None, {
                     command: 'ros2-assistant.selectItem',
                     title: 'Select Actions View',
                     arguments: ['actions']
-                })
+                }, new vscode.ThemeIcon('play'))
             ]);
         } else {
-            // Render fetched items or "nothing here" fallback
             if (this.currentItems.length === 0) {
-                return Promise.resolve([new Ros2TreeItem('nothing here', vscode.TreeItemCollapsibleState.None)]);
+                return Promise.resolve([
+                    new Ros2TreeItem('nothing here', vscode.TreeItemCollapsibleState.None, undefined, new vscode.ThemeIcon('info'))
+                ]);
             }
+
+            // Determine appropriate icon based on the active view type
+            let iconName = 'symbol-misc';
+            if (this.currentView === 'nodes') {
+                iconName = 'server';
+            } else if (this.currentView === 'topics') {
+                iconName = 'broadcast';
+            } else if (this.currentView === 'services') {
+                iconName = 'symbol-method';
+            } else if (this.currentView === 'actions') {
+                iconName = 'play';
+            }
+
             return Promise.resolve(
-                this.currentItems.map(item => new Ros2TreeItem(item, vscode.TreeItemCollapsibleState.None))
+                this.currentItems.map(item => new Ros2TreeItem(
+                    item,
+                    vscode.TreeItemCollapsibleState.None,
+                    undefined,
+                    new vscode.ThemeIcon(iconName)
+                ))
             );
         }
     }
@@ -122,10 +141,10 @@ class Ros2TreeDataProvider implements vscode.TreeDataProvider<Ros2TreeItem>, vsc
 
     private startPolling() {
         this.stopPolling();
-        this.fetchData(); // Fetch immediately on open
+        this.fetchData();
         this.refreshInterval = setInterval(() => {
             this.fetchData();
-        }, 1000); // Poll every 1 second
+        }, 1000);
     }
 
     private stopPolling() {
@@ -135,7 +154,7 @@ class Ros2TreeDataProvider implements vscode.TreeDataProvider<Ros2TreeItem>, vsc
         }
     }
 
-	private fetchData() {
+    private fetchData() {
         if (this.currentView === 'root') {
             return;
         }
@@ -151,16 +170,12 @@ class Ros2TreeDataProvider implements vscode.TreeDataProvider<Ros2TreeItem>, vsc
             cmd = 'ros2 action list';
         }
 
-        // Run the command and capture the full raw output
-		const fullCmd = `bash -c "export ROS_DOMAIN_ID=3 && source /opt/ros/humble/setup.bash && ${cmd}"`;
-        exec(fullCmd, (error, stdout) => {
+        const fullCmd = `bash -c "export ROS_DOMAIN_ID=3 && source /opt/ros/humble/setup.bash && ${cmd}"`;
+
+        exec(fullCmd, { env: process.env }, (error, stdout) => {
             let items: string[] = [];
             if (!error && stdout) {
-                const trimmed = stdout.trim();
-                if (trimmed.length > 0) {
-                    // Display the entire output as a single string item (or split by newlines if you want each line as its own row)
-                    items = [trimmed]; 
-                }
+                items = stdout.split('\n').map(s => s.trim()).filter(s => s.length > 0);
             }
 
             this.currentItems = items;
