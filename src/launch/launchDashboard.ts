@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import { randomBytes } from 'crypto';
 import { LaunchManager } from './launchManager';
 import type { LaunchFileInfo, LaunchOutput, LaunchSessionSnapshot } from './launchManager';
 import { discoverLaunchFiles } from './launchManager';
@@ -14,11 +15,10 @@ export class LaunchManagerDashboard implements vscode.Disposable {
     private readonly outputListener = (output: LaunchOutput) => {
         this.post({ command: 'launchOutput', output });
     };
-    private readonly startedListener = (_session: LaunchSessionSnapshot) => this.postSessions();
-    private readonly statusListener = (_session: LaunchSessionSnapshot) => this.postSessions();
+    private readonly startedListener = () => this.postSessions();
+    private readonly statusListener = () => this.postSessions();
 
     static createOrShow(
-        extensionUri: vscode.Uri,
         manager: LaunchManager,
         workspaceRoots: string[]
     ): void {
@@ -32,7 +32,7 @@ export class LaunchManagerDashboard implements vscode.Disposable {
             'ros2LaunchManager',
             'ROS 2 Launch Manager',
             vscode.ViewColumn.One,
-            { enableScripts: true, retainContextWhenHidden: true }
+            { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [] }
         );
         LaunchManagerDashboard.currentPanel = new LaunchManagerDashboard(panel, manager, workspaceRoots);
     }
@@ -45,7 +45,8 @@ export class LaunchManagerDashboard implements vscode.Disposable {
         this.panel = panel;
         this.workspaceRoots = workspaceRoots;
         this.selectedWorkspace = workspaceRoots[0] ?? '';
-        this.panel.webview.html = this.getHtml();
+        const nonce = randomBytes(16).toString('base64');
+        this.panel.webview.html = this.getHtml(nonce);
         this.manager.on('output', this.outputListener);
         this.manager.on('started', this.startedListener);
         this.manager.on('status', this.statusListener);
@@ -139,12 +140,13 @@ export class LaunchManagerDashboard implements vscode.Disposable {
         }
     }
 
-    private getHtml(): string {
+    private getHtml(nonce: string): string {
         return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
 <title>ROS 2 Launch Manager</title>
 <style>
 :root { color-scheme: light dark; }
@@ -238,7 +240,7 @@ pre { margin: 0; padding: 10px; min-height: 160px; max-height: 330px; overflow: 
 <div class="muted">These are nodes currently visible in the ROS graph. ROS 2 does not expose a reliable universal mapping from a node to the launch process that started it, so this list is workspace-wide and association is approximate.</div>
 <div id="nodes" class="node-list"><span class="empty">Refresh to query ros2 node list.</span></div>
 </section>
-<script>
+<script nonce="${nonce}">
 const vscode = acquireVsCodeApi();
 const workspaceSelect = document.getElementById('workspace');
 const fileList = document.getElementById('file-list');

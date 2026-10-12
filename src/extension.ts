@@ -237,7 +237,7 @@ export async function activate(context: vscode.ExtensionContext) {
         context.subscriptions.push({ dispose: () => launchManager?.dispose() });
         const launchManagerDisposable = vscode.commands.registerCommand('ros2-assistant.openLaunchManager', () => {
             const workspaceRoots = (vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri.fsPath);
-            LaunchManagerDashboard.createOrShow(context.extensionUri, launchManager!, workspaceRoots);
+            LaunchManagerDashboard.createOrShow(launchManager!, workspaceRoots);
         });
         context.subscriptions.push(launchManagerDisposable);
     } catch (error) {

@@ -352,7 +352,7 @@ export class LaunchManager extends EventEmitter {
             status: 'running'
         };
         const script = this.ros.withEnvironment(
-            'package="$1"; launch_file="$2"; shift 2; exec ros2 launch "$package" "$launch_file" "$@"'
+            'package="$1" && launch_file="$2" && shift 2 && exec ros2 launch "$package" "$launch_file" "$@"'
         );
         const child = this.processes.spawn(
             'bash',
