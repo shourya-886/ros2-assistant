@@ -27,6 +27,10 @@
       {
         "command": "ros2-assistant.detectWorkspace",
         "title": "ROS 2 Assistant: Detect Workspace"
+      },
+      {
+        "command": "ros2-assistant.discoverPackages",
+        "title": "ROS 2 Assistant: Discover Packages"
       }
     ],
     "menus": {
