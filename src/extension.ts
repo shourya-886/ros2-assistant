@@ -1,10 +1,60 @@
 import * as vscode from 'vscode';
 import { exec, execFile, spawn, ChildProcess, ChildProcessWithoutNullStreams } from 'child_process';
+import { existsSync, readdirSync } from 'fs';
+import * as path from 'path';
 
-// Must match the shell where your ROS 2 nodes run (domain and RMW from ~/.bashrc).
-// Mixing RMW implementations (e.g. Fast DDS client with a CycloneDDS server) breaks service calls.
-const ROS_SETUP =
-    'export ROS_DOMAIN_ID=3 && export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp && source /opt/ros/humble/setup.bash';
+/** Set during activation after the installed ROS 2 distro and domain ID are selected. */
+let ROS_SETUP = '';
+
+// ROS 2 release order. Rolling is also accepted because it tracks the newest ROS 2 development branch.
+const ROS_DISTRO_ORDER: Record<string, number> = {
+    humble: 2022,
+    iron: 2023,
+    jazzy: 2024,
+    kilted: 2025,
+    lyrical: 2026,
+    rolling: 9999
+};
+
+function findInstalledRosDistros(): string[] {
+    const rosInstallRoot = '/opt/ros';
+    if (!existsSync(rosInstallRoot)) {
+        return [];
+    }
+
+    try {
+        return readdirSync(rosInstallRoot, { withFileTypes: true })
+            .filter(entry => entry.isDirectory())
+            .map(entry => entry.name)
+            .filter(distro => existsSync(path.join(rosInstallRoot, distro, 'setup.bash')));
+    } catch {
+        return [];
+    }
+}
+
+function findCompatibleRosDistro(): { distro?: string; installed: string[] } {
+    const installed = findInstalledRosDistros();
+    const compatible = installed
+        .filter(distro => Object.prototype.hasOwnProperty.call(ROS_DISTRO_ORDER, distro))
+        .sort((a, b) => ROS_DISTRO_ORDER[b] - ROS_DISTRO_ORDER[a]);
+
+    // Prefer the ROS distro already active in the VS Code process, if it is supported and installed.
+    const activeDistro = process.env.ROS_DISTRO;
+    const distro = activeDistro && compatible.includes(activeDistro)
+        ? activeDistro
+        : compatible[0];
+
+    return { distro, installed };
+}
+
+function configureRosEnvironment(distro: string, domainId: number): void {
+    // Respect an explicitly configured RMW; otherwise retain the extension's previous Cyclone DDS default.
+    const inheritedRmw = process.env.RMW_IMPLEMENTATION;
+    const rmwImplementation = inheritedRmw && /^rmw_[A-Za-z0-9_]+$/.test(inheritedRmw)
+        ? inheritedRmw
+        : 'rmw_cyclonedds_cpp';
+    ROS_SETUP = `source /opt/ros/${distro}/setup.bash && export ROS_DOMAIN_ID=${domainId} && export RMW_IMPLEMENTATION=${rmwImplementation}`;
+}
 
 function escapeHtml(text: string): string {
     return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -90,20 +140,60 @@ export function readInterfaceDefinition(
     });
 }
 
-export function activate(context: vscode.ExtensionContext) {
-
+export async function activate(context: vscode.ExtensionContext) {
     try {
+        const extensionName = String(context.extension.packageJSON.displayName || context.extension.packageJSON.name || 'ROS2 Assistant');
+        const detected = findCompatibleRosDistro();
+
+        if (!detected.distro) {
+            const installedText = detected.installed.length > 0 ? detected.installed.join(', ') : 'no ROS 2 distro found';
+            vscode.window.showErrorMessage(
+                `extension ${extensionName} is not compatible with the ros2 distro ${installedText}`
+            );
+            return;
+        }
+
+        let domainId = context.globalState.get<number>('ros2-assistant.domainId');
+        if (!Number.isInteger(domainId) || domainId! < 0 || domainId! > 232) {
+            const inheritedDomain = process.env.ROS_DOMAIN_ID;
+            const initialValue = inheritedDomain && /^\d+$/.test(inheritedDomain) && Number(inheritedDomain) <= 232
+                ? inheritedDomain
+                : '0';
+            const enteredDomain = await vscode.window.showInputBox({
+                title: 'ROS 2 Assistant Setup',
+                prompt: `ROS 2 ${detected.distro} detected. Enter the ROS_DOMAIN_ID to use.`,
+                placeHolder: '0',
+                value: initialValue,
+                validateInput: value => {
+                    if (!/^\d+$/.test(value.trim())) {
+                        return 'Enter a whole number between 0 and 232.';
+                    }
+                    const parsed = Number(value);
+                    return parsed >= 0 && parsed <= 232 ? undefined : 'ROS_DOMAIN_ID must be between 0 and 232.';
+                },
+                ignoreFocusOut: true
+            });
+
+            if (enteredDomain === undefined) {
+                vscode.window.showWarningMessage('ROS2 Assistant setup was cancelled. Reload the window to try again.');
+                return;
+            }
+
+            domainId = Number(enteredDomain.trim());
+            await context.globalState.update('ros2-assistant.domainId', domainId);
+        }
+
+        configureRosEnvironment(detected.distro, domainId!);
+        console.log(`ROS2 Assistant using ROS 2 ${detected.distro}, ROS_DOMAIN_ID=${domainId}`);
+
         const helloDisposable = vscode.commands.registerCommand('ros2-assistant.helloWorld', () => {
             vscode.window.showInformationMessage('Hello World from ROS2 Assistant!');
         });
         context.subscriptions.push(helloDisposable);
 
         const treeDataProvider = new Ros2TreeDataProvider();
-        vscode.window.registerTreeDataProvider('ros2View', treeDataProvider);
-
-        context.subscriptions.push({
-            dispose: () => treeDataProvider.dispose()
-        });
+        context.subscriptions.push(vscode.window.registerTreeDataProvider('ros2View', treeDataProvider));
+        context.subscriptions.push({ dispose: () => treeDataProvider.dispose() });
 
         const backDisposable = vscode.commands.registerCommand('ros2-assistant.goBack', () => {
             treeDataProvider.goBack();
@@ -115,7 +205,6 @@ export function activate(context: vscode.ExtensionContext) {
         });
         context.subscriptions.push(selectDisposable);
 
-        // Command to open Topic Echo Webview tab
         const inspectTopicDisposable = vscode.commands.registerCommand('ros2-assistant.inspectItem', (item: Ros2TreeItem) => {
             if (item.viewType === 'topics') {
                 TopicEchoPanel.createOrShow(context.extensionUri, item.label);
@@ -123,7 +212,6 @@ export function activate(context: vscode.ExtensionContext) {
         });
         context.subscriptions.push(inspectTopicDisposable);
 
-        // Command to open Node Info Webview tab
         const inspectNodeDisposable = vscode.commands.registerCommand('ros2-assistant.inspectNode', (item: Ros2TreeItem) => {
             if (item.viewType === 'nodes') {
                 NodeInfoPanel.createOrShow(context.extensionUri, item.label);
@@ -131,7 +219,6 @@ export function activate(context: vscode.ExtensionContext) {
         });
         context.subscriptions.push(inspectNodeDisposable);
 
-        // Command to open Service Call Webview tab
         const inspectServiceDisposable = vscode.commands.registerCommand('ros2-assistant.inspectService', (item: Ros2TreeItem) => {
             if (item.viewType === 'services') {
                 ServiceCallPanel.createOrShow(context.extensionUri, item.label);
@@ -139,19 +226,17 @@ export function activate(context: vscode.ExtensionContext) {
         });
         context.subscriptions.push(inspectServiceDisposable);
 
-        // Command to open Action Goal Webview tab
         const inspectActionDisposable = vscode.commands.registerCommand('ros2-assistant.inspectAction', (item: Ros2TreeItem) => {
             if (item.viewType === 'actions') {
                 ActionGoalPanel.createOrShow(context.extensionUri, item.label);
             }
         });
         context.subscriptions.push(inspectActionDisposable);
-
     } catch (error) {
         console.error('Error during ROS2 Assistant activation:', error);
+        vscode.window.showErrorMessage(`ROS2 Assistant failed to start: ${error instanceof Error ? error.message : String(error)}`);
     }
 }
-
 class Ros2TreeItem extends vscode.TreeItem {
     constructor(
         public readonly label: string,
@@ -192,6 +277,18 @@ class Ros2TreeDataProvider implements vscode.TreeDataProvider<Ros2TreeItem>, vsc
                     title: 'Select Topics View',
                     arguments: ['topics']
                 }, new vscode.ThemeIcon('broadcast')),
+                (() => {
+                    const publishItem = new Ros2TreeItem(
+                        'Publish to Topic',
+                        vscode.TreeItemCollapsibleState.None,
+                        'disabled',
+                        undefined,
+                        new vscode.ThemeIcon('lock')
+                    );
+                    publishItem.description = 'Coming soon';
+                    publishItem.tooltip = 'Publish to Topic is not available yet.';
+                    return publishItem;
+                })(),
                 new Ros2TreeItem('List Actions', vscode.TreeItemCollapsibleState.None, 'root', {
                     command: 'ros2-assistant.selectItem',
                     title: 'Select Actions View',
@@ -658,6 +755,7 @@ class ServiceCallPanel {
     private started = false;
     private typeMessage: object | undefined;
     private template: string | undefined;
+    private serviceProcess: ChildProcess | undefined;
 
     public static createOrShow(extensionUri: vscode.Uri, serviceName: string) {
         const column = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : undefined;
@@ -756,16 +854,18 @@ class ServiceCallPanel {
 
     private _executeServiceCall(args: string) {
         if (!this.serviceType || this.serviceType === 'Unknown') {
+            this._panel.webview.postMessage({ command: 'serviceState', running: false });
             this._panel.webview.postMessage({
                 command: 'serviceResponse',
                 data: 'Error: Valid service type not found. Cannot execute call.'
             });
             return;
         }
+        if (this.serviceProcess) {
+            return;
+        }
 
         const flattenedArgs = args.replace(/\r?\n/g, ' ').replace(/\s+/g, ' ').trim();
-
-        // Values travel through environment variables, so no shell quoting can alter them.
         const env = {
             ...process.env,
             PYTHONUNBUFFERED: '1',
@@ -773,40 +873,48 @@ class ServiceCallPanel {
             SVC_TYPE: this.serviceType,
             SVC_ARGS: flattenedArgs
         };
-        const script = `${ROS_SETUP} && ros2 service call "$SVC_NAME" "$SVC_TYPE" "$SVC_ARGS"`;
+        const script = `${ROS_SETUP} && exec ros2 service call "$SVC_NAME" "$SVC_TYPE" "$SVC_ARGS"`;
+        const show = (text: string) => this._panel.webview.postMessage({ command: 'serviceResponse', data: text });
 
-        const show = (text: string) => {
-            this._panel.webview.postMessage({ command: 'serviceResponse', data: text });
-        };
-        show(`Calling ${this.serviceName} (${this.serviceType})...`);
+        this._panel.webview.postMessage({ command: 'serviceState', running: true });
+        show(`Calling ${this.serviceName}...`);
 
         let stdout = '';
         let stderr = '';
+        let finished = false;
         const child = spawn('bash', ['-c', script], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+        this.serviceProcess = child;
+
+        const finish = (message: string) => {
+            if (finished) {
+                return;
+            }
+            finished = true;
+            clearTimeout(timeout);
+            this.serviceProcess = undefined;
+            this._panel.webview.postMessage({ command: 'serviceState', running: false });
+            show(message);
+        };
+
         const timeout = setTimeout(() => {
-            child.kill();
-            show('No response after 30s. Is the service server running (same domain and RMW)?');
+            child.kill('SIGTERM');
+            finish('No response after 30s. Is the service server running on the selected ROS domain?');
         }, 30000);
 
         child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
         child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
-        child.on('error', (err) => {
-            clearTimeout(timeout);
-            show(`Failed to start: ${err.message}`);
-        });
-        child.on('close', (code) => {
-            clearTimeout(timeout);
+        child.on('error', err => finish(`Failed to start: ${err.message}`));
+        child.on('close', code => {
             if (code !== 0) {
-                show(`Error executing service call:\n${(stderr || stdout).trim()}`);
+                finish(`Error executing service call:\n${(stderr || stdout).trim()}`);
                 return;
             }
-            // Show only the fields, e.g. "sum=3" instead of "example_interfaces.srv.AddTwoInts_Response(sum=3)".
             const idx = stdout.indexOf('response:');
             const result = (idx >= 0 ? stdout.slice(idx + 'response:'.length) : stdout).trim();
             const open = result.indexOf('(');
             const close = result.lastIndexOf(')');
             const fields = open >= 0 && close > open ? result.slice(open + 1, close) : result;
-            show(fields || 'Service called successfully.');
+            finish(fields || 'Service called successfully.');
         });
     }
 
@@ -862,9 +970,25 @@ class ServiceCallPanel {
             font-weight: bold;
             align-self: flex-start;
         }
-        button:hover {
+        button:hover:not(:disabled) {
             background-color: var(--vscode-button-hoverBackground);
         }
+        button:disabled {
+            opacity: 0.7;
+            cursor: default;
+        }
+        .spinner {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            margin-right: 7px;
+            border: 2px solid currentColor;
+            border-right-color: transparent;
+            border-radius: 50%;
+            vertical-align: -2px;
+            animation: spin 0.7s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
         .section-card {
             background-color: var(--vscode-textCodeBlock-background);
             border: 1px solid var(--vscode-panel-border);
@@ -893,7 +1017,7 @@ class ServiceCallPanel {
     <div class="input-group">
         <label for="args-input"><strong>Request Arguments Template:</strong></label>
         <textarea id="args-input">{}</textarea>
-        <button id="call-btn">Call Service</button>
+        <button id="call-btn" type="button">Call Service</button>
     </div>
 
     <div class="section-card">
@@ -917,11 +1041,15 @@ class ServiceCallPanel {
             userEdited = true;
         });
 
+        const setServiceRunning = running => {
+            callBtn.disabled = running;
+            callBtn.innerHTML = running ? '<span class="spinner" aria-hidden="true"></span>Calling...' : 'Call Service';
+        };
+
         callBtn.addEventListener('click', () => {
-            vscode.postMessage({
-                command: 'callService',
-                args: currentArgs
-            });
+            if (callBtn.disabled) return;
+            setServiceRunning(true);
+            vscode.postMessage({ command: 'callService', args: currentArgs });
         });
 
         window.addEventListener('message', event => {
@@ -937,6 +1065,8 @@ class ServiceCallPanel {
                     currentArgs = message.template;
                     templateLoaded = true;
                 }
+            } else if (message.command === 'serviceState') {
+                setServiceRunning(message.running);
             } else if (message.command === 'serviceExecuting') {
                 outputPre.textContent = message.info;
             } else if (message.command === 'serviceResponse') {
@@ -952,6 +1082,10 @@ class ServiceCallPanel {
 
     public dispose() {
         ServiceCallPanel.currentPanels.delete(this.serviceName);
+        if (this.serviceProcess) {
+            this.serviceProcess.kill('SIGTERM');
+            this.serviceProcess = undefined;
+        }
         this._panel.dispose();
 
         while (this._disposables.length) {
@@ -1078,6 +1212,7 @@ class ActionGoalPanel {
 
     private _sendGoal(args: string) {
         if (!this.actionType || this.actionType === 'Unknown') {
+            this._post({ command: 'goalState', running: false });
             this._post({ command: 'goalOutput', data: 'Error: Valid action type not found. Cannot send goal.' });
             return;
         }
@@ -1209,6 +1344,18 @@ class ActionGoalPanel {
             opacity: 0.5;
             cursor: default;
         }
+        .spinner {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            margin-right: 7px;
+            border: 2px solid currentColor;
+            border-right-color: transparent;
+            border-radius: 50%;
+            vertical-align: -2px;
+            animation: spin 0.7s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
         button.secondary {
             background-color: var(--vscode-button-secondaryBackground);
             color: var(--vscode-button-secondaryForeground);
@@ -1267,7 +1414,14 @@ class ActionGoalPanel {
             userEdited = true;
         });
 
+        const setGoalRunning = running => {
+            sendBtn.disabled = running;
+            sendBtn.innerHTML = running ? '<span class="spinner" aria-hidden="true"></span>Sending...' : 'Send Goal';
+        };
+
         sendBtn.addEventListener('click', () => {
+            if (sendBtn.disabled) return;
+            setGoalRunning(true);
             vscode.postMessage({ command: 'sendGoal', args: goalInput.value });
         });
 
@@ -1288,7 +1442,7 @@ class ActionGoalPanel {
                     templateLoaded = true;
                 }
             } else if (message.command === 'goalState') {
-                sendBtn.disabled = message.running;
+                setGoalRunning(message.running);
                 cancelBtn.disabled = !message.running;
             } else if (message.command === 'goalOutput') {
                 outputPre.textContent = message.data;
