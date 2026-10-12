@@ -2,8 +2,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { EventEmitter } from 'events';
 import type { ChildProcess } from 'child_process';
-import { ProcessManager, processManager } from '../core/processManager';
-import { RosEnvironmentManager, rosEnvironment } from '../core/rosEnvironment';
+import { processManager } from '../core/processManager';
+import type { ProcessManager } from '../core/processManager';
+import { rosEnvironment } from '../core/rosEnvironment';
+import type { RosEnvironmentManager } from '../core/rosEnvironment';
 
 export interface ColconBuildOptions {
     workspaceRoot: string;
