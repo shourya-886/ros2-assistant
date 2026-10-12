@@ -454,6 +454,7 @@ class PublishTopicPanel {
         this._panel.webview.onDidReceiveMessage(message => {
             if (message.command === 'ready' || message.command === 'refreshTopics') {
                 this._fetchTopics();
+                if (message.command === 'ready') this._fetchInterfaces();
             } else if (message.command === 'refreshInterfaces') {
                 this._fetchInterfaces();
             } else if (message.command === 'setTopicMode') {
@@ -682,9 +683,22 @@ class PublishTopicPanel {
 <body>
 <h2>Publish to Topic</h2>
 <div class="row">
+    <label style="min-width:auto"><input id="newTopicCheckbox" type="checkbox"> Publish on a new topic</label>
+</div>
+<div class="row" id="existingTopicRow">
     <label for="topicSelect">Topic to publish on:</label>
     <select id="topicSelect"><option value="">Loading topics...</option></select>
     <button id="refreshButton" type="button" title="Refresh topics">Refresh</button>
+</div>
+<div class="row" id="newTopicRow" hidden>
+    <label for="newTopicInput">New topic name:</label>
+    <input id="newTopicInput" type="text" placeholder="/my_robot/custom_topic" style="flex:1;min-width:220px">
+    <span class="muted">Include the leading /</span>
+</div>
+<div class="row" id="messageTypeRow" hidden>
+    <label for="messageTypeSelect">Message type:</label>
+    <select id="messageTypeSelect"><option value="">Loading ROS message types...</option></select>
+    <button id="refreshInterfacesButton" type="button">Refresh</button>
 </div>
 <div class="row">
     <div class="inline-field">
@@ -711,6 +725,12 @@ class PublishTopicPanel {
 <script>
     const vscode = acquireVsCodeApi();
     const topicSelect = document.getElementById('topicSelect');
+    const newTopicCheckbox = document.getElementById('newTopicCheckbox');
+    const newTopicInput = document.getElementById('newTopicInput');
+    const existingTopicRow = document.getElementById('existingTopicRow');
+    const newTopicRow = document.getElementById('newTopicRow');
+    const messageTypeRow = document.getElementById('messageTypeRow');
+    const messageTypeSelect = document.getElementById('messageTypeSelect');
     const rateInput = document.getElementById('rateInput');
     const countInput = document.getElementById('countInput');
     const messageInput = document.getElementById('message');
@@ -721,8 +741,31 @@ class PublishTopicPanel {
     const output = document.getElementById('output');
     let selectedType = '';
     let isRunning = false;
+    let newTopicMode = false;
 
     document.getElementById('refreshButton').addEventListener('click', () => vscode.postMessage({ command: 'refreshTopics' }));
+    document.getElementById('refreshInterfacesButton').addEventListener('click', () => vscode.postMessage({ command: 'refreshInterfaces' }));
+    newTopicCheckbox.addEventListener('change', () => {
+        newTopicMode = newTopicCheckbox.checked;
+        existingTopicRow.hidden = newTopicMode;
+        newTopicRow.hidden = !newTopicMode;
+        messageTypeRow.hidden = !newTopicMode;
+        selectedType = '';
+        messageInput.value = '';
+        messageInput.disabled = true;
+        startButton.disabled = true;
+        typeInfo.textContent = '';
+        status.textContent = newTopicMode ? 'Enter a new topic name and select a message type.' : 'Select an existing topic.';
+        vscode.postMessage({ command: 'setTopicMode', newTopic: newTopicMode });
+    });
+    messageTypeSelect.addEventListener('change', () => {
+        selectedType = '';
+        messageInput.value = '';
+        messageInput.disabled = true;
+        startButton.disabled = true;
+        status.textContent = 'Loading message definition...';
+        vscode.postMessage({ command: 'selectMessageType', type: messageTypeSelect.value });
+    });
     topicSelect.addEventListener('change', () => {
         selectedType = '';
         messageInput.value = '';
@@ -736,7 +779,7 @@ class PublishTopicPanel {
     startButton.addEventListener('click', () => {
         if (isRunning) return;
         output.textContent = '';
-        vscode.postMessage({ command: 'startPublishing', rate: rateInput.value, count: countInput.value, yaml: messageInput.value });
+        vscode.postMessage({ command: 'startPublishing', topic: newTopicMode ? newTopicInput.value : topicSelect.value, type: selectedType, newTopic: newTopicMode, rate: rateInput.value, count: countInput.value, yaml: messageInput.value });
     });
     stopButton.addEventListener('click', () => vscode.postMessage({ command: 'stopPublishing' }));
 
@@ -757,10 +800,32 @@ class PublishTopicPanel {
             }
             if (data.error) status.textContent = data.error;
             if (previous && (data.topics || []).includes(previous)) topicSelect.value = previous;
+        } else if (data.command === 'interfaces') {
+            messageTypeSelect.replaceChildren();
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = data.error ? 'Unable to load message types' : 'Select a message type';
+            messageTypeSelect.appendChild(placeholder);
+            for (const type of data.types || []) {
+                const option = document.createElement('option');
+                option.value = type;
+                option.textContent = type;
+                messageTypeSelect.appendChild(option);
+            }
+            if (data.error) status.textContent = data.error;
+        } else if (data.command === 'clearSelection') {
+            selectedType = '';
+            messageInput.value = '';
+            messageInput.disabled = true;
+            startButton.disabled = true;
+            typeInfo.textContent = '';
+        } else if (data.command === 'modeChanged') {
+            newTopicMode = data.newTopic;
         } else if (data.command === 'selectTopic') {
             if (data.topic && topicSelect.value !== data.topic) topicSelect.value = data.topic;
         } else if (data.command === 'topicType') {
-            if (data.topic !== topicSelect.value) return;
+            if (!newTopicMode && data.topic !== topicSelect.value) return;
+            if (newTopicMode && data.topic) return;
             selectedType = data.type || '';
             messageInput.value = data.template || '';
             messageInput.disabled = Boolean(data.loading) || !selectedType;
