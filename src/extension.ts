@@ -212,6 +212,11 @@ export async function activate(context: vscode.ExtensionContext) {
         });
         context.subscriptions.push(inspectTopicDisposable);
 
+        const publishTopicDisposable = vscode.commands.registerCommand('ros2-assistant.publishTopic', () => {
+            PublishTopicPanel.createOrShow(context.extensionUri);
+        });
+        context.subscriptions.push(publishTopicDisposable);
+
         const inspectNodeDisposable = vscode.commands.registerCommand('ros2-assistant.inspectNode', (item: Ros2TreeItem) => {
             if (item.viewType === 'nodes') {
                 NodeInfoPanel.createOrShow(context.extensionUri, item.label);
@@ -277,18 +282,10 @@ class Ros2TreeDataProvider implements vscode.TreeDataProvider<Ros2TreeItem>, vsc
                     title: 'Select Topics View',
                     arguments: ['topics']
                 }, new vscode.ThemeIcon('broadcast')),
-                (() => {
-                    const publishItem = new Ros2TreeItem(
-                        'Publish to Topic',
-                        vscode.TreeItemCollapsibleState.None,
-                        'disabled',
-                        undefined,
-                        new vscode.ThemeIcon('lock')
-                    );
-                    publishItem.description = 'Coming soon';
-                    publishItem.tooltip = 'Publish to Topic is not available yet.';
-                    return publishItem;
-                })(),
+                new Ros2TreeItem('Publish to Topic', vscode.TreeItemCollapsibleState.None, 'root', {
+                    command: 'ros2-assistant.publishTopic',
+                    title: 'Publish to Topic'
+                }, new vscode.ThemeIcon('send')),
                 new Ros2TreeItem('List Actions', vscode.TreeItemCollapsibleState.None, 'root', {
                     command: 'ros2-assistant.selectItem',
                     title: 'Select Actions View',
@@ -418,6 +415,330 @@ class Ros2TreeDataProvider implements vscode.TreeDataProvider<Ros2TreeItem>, vsc
 
     public dispose() {
         this.stopPolling();
+    }
+}
+
+/**
+ * Provides a GUI for publishing ROS 2 messages to a selected topic.
+ */
+class PublishTopicPanel {
+    private static currentPanel: PublishTopicPanel | undefined;
+    private readonly _panel: vscode.WebviewPanel;
+    private readonly _disposables: vscode.Disposable[] = [];
+    private selectedTopic = '';
+    private messageType = '';
+    private publisherProcess: ChildProcess | undefined;
+    private selectionVersion = 0;
+
+    public static createOrShow(extensionUri: vscode.Uri) {
+        const column = vscode.window.activeTextEditor?.viewColumn;
+        if (PublishTopicPanel.currentPanel) {
+            PublishTopicPanel.currentPanel._panel.reveal(column);
+            return;
+        }
+
+        const panel = vscode.window.createWebviewPanel(
+            'ros2PublishTopic',
+            'Publish to Topic',
+            column || vscode.ViewColumn.One,
+            { enableScripts: true }
+        );
+        PublishTopicPanel.currentPanel = new PublishTopicPanel(panel);
+    }
+
+    private constructor(panel: vscode.WebviewPanel) {
+        this._panel = panel;
+        this._panel.webview.html = this._getHtmlForWebview();
+        this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
+        this._panel.webview.onDidReceiveMessage(message => {
+            if (message.command === 'ready' || message.command === 'refreshTopics') {
+                this._fetchTopics();
+            } else if (message.command === 'selectTopic') {
+                this._selectTopic(String(message.topic || ''));
+            } else if (message.command === 'startPublishing') {
+                this._startPublishing(message.rate, message.count, String(message.yaml || ''));
+            } else if (message.command === 'stopPublishing') {
+                this._stopPublishing();
+            }
+        }, null, this._disposables);
+    }
+
+    private _post(message: object) {
+        this._panel.webview.postMessage(message);
+    }
+
+    private _fetchTopics() {
+        const script = `${ROS_SETUP} && exec ros2 topic list`;
+        execFile('bash', ['-c', script], { env: process.env }, (error, stdout, stderr) => {
+            if (error) {
+                this._post({ command: 'topics', topics: [], error: (stderr || error.message).trim() });
+                return;
+            }
+            const topics = stdout.split(/\r?\n/).map(topic => topic.trim()).filter(Boolean);
+            this._post({ command: 'topics', topics });
+            if (this.selectedTopic && topics.includes(this.selectedTopic)) {
+                this._post({ command: 'selectTopic', topic: this.selectedTopic });
+                this._selectTopic(this.selectedTopic);
+            }
+        });
+    }
+
+    private _selectTopic(topic: string) {
+        this.selectedTopic = topic;
+        this.messageType = '';
+        const requestVersion = ++this.selectionVersion;
+        this._post({ command: 'topicType', topic, type: '', template: '', loading: Boolean(topic) });
+        if (!topic) {
+            return;
+        }
+
+        const env = { ...process.env, ROS_TOPIC_NAME: topic };
+        const script = `${ROS_SETUP} && exec ros2 topic type "$ROS_TOPIC_NAME"`;
+        execFile('bash', ['-c', script], { env }, (error, stdout, stderr) => {
+            if (requestVersion !== this.selectionVersion) {
+                return;
+            }
+            if (error || !stdout.trim()) {
+                this._post({ command: 'topicType', topic, type: '', template: '', loading: false,
+                    error: (stderr || error?.message || 'Could not determine topic type.').trim() });
+                return;
+            }
+
+            const type = stdout.trim().split(/\r?\n/)[0].trim();
+            this.messageType = type;
+            readInterfaceDefinition(type, (definitionError, definition, definitionStderr) => {
+                if (requestVersion !== this.selectionVersion) {
+                    return;
+                }
+                if (definitionError || !definition.trim()) {
+                    this._post({ command: 'topicType', topic, type, template: '{}', loading: false,
+                        error: (definitionStderr || definitionError?.message || 'Could not load message definition.').trim() });
+                    return;
+                }
+                this._post({ command: 'topicType', topic, type, template: buildGoalTemplate(definition), loading: false });
+            });
+        });
+    }
+
+    private _startPublishing(rateValue: unknown, countValue: unknown, yaml: string) {
+        if (this.publisherProcess) {
+            return;
+        }
+        const rate = Number(rateValue);
+        const count = Number(countValue);
+        if (!this.selectedTopic || !this.messageType) {
+            this._post({ command: 'publishStatus', running: false, text: 'Select a valid topic first.' });
+            return;
+        }
+        if (!Number.isFinite(rate) || rate <= 0) {
+            this._post({ command: 'publishStatus', running: false, text: 'Publish rate must be greater than 0 Hz.' });
+            return;
+        }
+        if (!Number.isInteger(count) || count < 1) {
+            this._post({ command: 'publishStatus', running: false, text: 'Number of messages must be a positive whole number.' });
+            return;
+        }
+        if (!yaml.trim()) {
+            this._post({ command: 'publishStatus', running: false, text: 'Message cannot be empty.' });
+            return;
+        }
+
+        const env = {
+            ...process.env,
+            ROS_TOPIC_NAME: this.selectedTopic,
+            ROS_MESSAGE_TYPE: this.messageType,
+            ROS_PUBLISH_RATE: String(rate),
+            ROS_PUBLISH_COUNT: String(count),
+            ROS_MESSAGE_YAML: yaml
+        };
+        const script = `${ROS_SETUP} && exec ros2 topic pub --rate "$ROS_PUBLISH_RATE" --times "$ROS_PUBLISH_COUNT" "$ROS_TOPIC_NAME" "$ROS_MESSAGE_TYPE" "$ROS_MESSAGE_YAML"`;
+        const child = spawn('bash', ['-c', script], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+        this.publisherProcess = child;
+        this._post({ command: 'publishStatus', running: true, text: `Publishing ${count} message(s) to ${this.selectedTopic} at ${rate} Hz...` });
+
+        child.stdout?.on('data', chunk => {
+            this._post({ command: 'publishOutput', text: chunk.toString() });
+        });
+        child.stderr?.on('data', chunk => {
+            this._post({ command: 'publishOutput', text: chunk.toString() });
+        });
+        child.on('error', error => {
+            if (this.publisherProcess === child) {
+                this.publisherProcess = undefined;
+            }
+            this._post({ command: 'publishStatus', running: false, text: `Failed to start publisher: ${error.message}` });
+        });
+        child.on('close', code => {
+            if (this.publisherProcess === child) {
+                this.publisherProcess = undefined;
+            }
+            this._post({ command: 'publishStatus', running: false,
+                text: code === 0 ? 'Publishing completed.' : `Publisher stopped (exit code ${code}).` });
+        });
+    }
+
+    private _stopPublishing() {
+        const child = this.publisherProcess;
+        if (!child) {
+            return;
+        }
+        child.kill('SIGINT');
+        this._post({ command: 'publishStatus', running: true, text: 'Stopping publisher...' });
+        setTimeout(() => {
+            if (this.publisherProcess === child) {
+                child.kill('SIGKILL');
+            }
+        }, 2000);
+    }
+
+    private _getHtmlForWebview(): string {
+        return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Publish to Topic</title>
+<style>
+    body { font-family: var(--vscode-font-family); padding: 20px; color: var(--vscode-foreground); background: var(--vscode-editor-background); }
+    h2 { margin: 0 0 20px; padding-bottom: 10px; border-bottom: 1px solid var(--vscode-panel-border); }
+    .row { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; flex-wrap: wrap; }
+    label { font-weight: 600; min-width: 150px; }
+    select, input, textarea { box-sizing: border-box; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, var(--vscode-widget-border)); border-radius: 3px; padding: 8px; font: inherit; }
+    select { flex: 1; min-width: 220px; }
+    input[type=number] { width: 120px; }
+    .inline-field { display: flex; align-items: center; gap: 8px; }
+    .inline-field label { min-width: auto; }
+    button { border: 1px solid var(--vscode-button-border, transparent); border-radius: 3px; padding: 8px 14px; color: var(--vscode-button-foreground); background: var(--vscode-button-background); cursor: pointer; }
+    button:hover { background: var(--vscode-button-hoverBackground); }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    #message { display: block; width: 100%; min-height: 230px; resize: vertical; font-family: var(--vscode-editor-font-family, monospace); white-space: pre; }
+    .message-label { display: block; margin-bottom: 8px; }
+    .actions { display: flex; gap: 10px; margin-top: 16px; }
+    #stopButton { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
+    #status { margin-top: 18px; padding: 10px; background: var(--vscode-textCodeBlock-background); white-space: pre-wrap; }
+    #output { margin-top: 8px; max-height: 180px; overflow: auto; white-space: pre-wrap; font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; }
+    .muted { color: var(--vscode-descriptionForeground); }
+    @media (max-width: 600px) { label { min-width: 100%; } .row { align-items: stretch; } .inline-field { flex-wrap: wrap; } }
+</style>
+</head>
+<body>
+<h2>Publish to Topic</h2>
+<div class="row">
+    <label for="topicSelect">Topic to publish on:</label>
+    <select id="topicSelect"><option value="">Loading topics...</option></select>
+    <button id="refreshButton" type="button" title="Refresh topics">Refresh</button>
+</div>
+<div class="row">
+    <div class="inline-field">
+        <label for="rateInput">Publish rate:</label>
+        <input id="rateInput" type="number" min="0.001" step="any" value="1">
+        <span class="muted">Hz</span>
+    </div>
+    <div class="inline-field">
+        <label for="countInput">Number of messages:</label>
+        <input id="countInput" type="number" min="1" step="1" value="1">
+    </div>
+</div>
+<div class="row" style="display:block">
+    <label class="message-label" for="message">Message:</label>
+    <textarea id="message" spellcheck="false" placeholder="Select a topic to load its message template..." disabled></textarea>
+    <div id="typeInfo" class="muted"></div>
+</div>
+<div class="actions">
+    <button id="startButton" type="button" disabled>Start Publishing</button>
+    <button id="stopButton" type="button" disabled>Stop Publishing</button>
+</div>
+<div id="status" role="status">Select a topic to begin.</div>
+<pre id="output"></pre>
+<script>
+    const vscode = acquireVsCodeApi();
+    const topicSelect = document.getElementById('topicSelect');
+    const rateInput = document.getElementById('rateInput');
+    const countInput = document.getElementById('countInput');
+    const messageInput = document.getElementById('message');
+    const typeInfo = document.getElementById('typeInfo');
+    const startButton = document.getElementById('startButton');
+    const stopButton = document.getElementById('stopButton');
+    const status = document.getElementById('status');
+    const output = document.getElementById('output');
+    let selectedType = '';
+    let isRunning = false;
+
+    document.getElementById('refreshButton').addEventListener('click', () => vscode.postMessage({ command: 'refreshTopics' }));
+    topicSelect.addEventListener('change', () => {
+        selectedType = '';
+        messageInput.value = '';
+        messageInput.disabled = true;
+        startButton.disabled = true;
+        typeInfo.textContent = '';
+        status.textContent = 'Loading topic type and message template...';
+        output.textContent = '';
+        vscode.postMessage({ command: 'selectTopic', topic: topicSelect.value });
+    });
+    startButton.addEventListener('click', () => {
+        if (isRunning) return;
+        output.textContent = '';
+        vscode.postMessage({ command: 'startPublishing', rate: rateInput.value, count: countInput.value, yaml: messageInput.value });
+    });
+    stopButton.addEventListener('click', () => vscode.postMessage({ command: 'stopPublishing' }));
+
+    window.addEventListener('message', event => {
+        const data = event.data;
+        if (data.command === 'topics') {
+            const previous = topicSelect.value;
+            topicSelect.replaceChildren();
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = data.error ? 'Unable to load topics' : 'Select a topic';
+            topicSelect.appendChild(placeholder);
+            for (const topic of data.topics || []) {
+                const option = document.createElement('option');
+                option.value = topic;
+                option.textContent = topic;
+                topicSelect.appendChild(option);
+            }
+            if (data.error) status.textContent = data.error;
+            if (previous && (data.topics || []).includes(previous)) topicSelect.value = previous;
+        } else if (data.command === 'selectTopic') {
+            if (data.topic && topicSelect.value !== data.topic) topicSelect.value = data.topic;
+        } else if (data.command === 'topicType') {
+            if (data.topic !== topicSelect.value) return;
+            selectedType = data.type || '';
+            messageInput.value = data.template || '';
+            messageInput.disabled = Boolean(data.loading) || !selectedType;
+            typeInfo.textContent = selectedType ? 'Message type: ' + selectedType : (data.error || '');
+            startButton.disabled = !selectedType || isRunning;
+            if (data.loading) status.textContent = 'Loading message definition...';
+            else if (data.error) status.textContent = data.error;
+            else status.textContent = selectedType ? 'Message template loaded. Edit it and start publishing.' : 'Select a topic to begin.';
+        } else if (data.command === 'publishStatus') {
+            isRunning = data.running;
+            startButton.disabled = isRunning || !selectedType;
+            stopButton.disabled = !isRunning;
+            status.textContent = data.text;
+        } else if (data.command === 'publishOutput') {
+            output.textContent += data.text;
+            output.scrollTop = output.scrollHeight;
+        }
+    });
+
+    vscode.postMessage({ command: 'ready' });
+</script>
+</body>
+</html>`;
+    }
+
+    public dispose() {
+        if (PublishTopicPanel.currentPanel === this) {
+            PublishTopicPanel.currentPanel = undefined;
+        }
+        if (this.publisherProcess) {
+            this.publisherProcess.kill('SIGINT');
+            this.publisherProcess = undefined;
+        }
+        while (this._disposables.length) {
+            this._disposables.pop()?.dispose();
+        }
     }
 }
 
