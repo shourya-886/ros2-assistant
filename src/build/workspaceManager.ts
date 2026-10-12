@@ -157,3 +157,46 @@ export function detectRos2Workspace(startPath: string): WorkspaceDetectionResult
 
     return incompleteCandidate ?? notFound();
 }
+
+
+export interface RosBuildEnvironment {
+    installedRosDistros: string[];
+    activeRosDistro?: string;
+    colconPath?: string;
+}
+
+/** Checks common ROS 2 installations and searches PATH for an executable colcon command. */
+export function detectRosBuildEnvironment(
+    rosInstallRoot = '/opt/ros',
+    searchPath = process.env.PATH ?? ''
+): RosBuildEnvironment {
+    let installedRosDistros: string[] = [];
+    try {
+        installedRosDistros = fs.readdirSync(rosInstallRoot, { withFileTypes: true })
+            .filter(entry => entry.isDirectory())
+            .map(entry => entry.name)
+            .filter(distro => fs.existsSync(path.join(rosInstallRoot, distro, 'setup.bash')));
+    } catch {
+        // A missing /opt/ros directory simply means no standard ROS installation was found.
+    }
+
+    let colconPath: string | undefined;
+    for (const directory of searchPath.split(path.delimiter).filter(Boolean)) {
+        const candidate = path.join(directory, 'colcon');
+        try {
+            if (fs.statSync(candidate).isFile()) {
+                fs.accessSync(candidate, fs.constants.X_OK);
+                colconPath = candidate;
+                break;
+            }
+        } catch {
+            // Continue searching the remaining PATH entries.
+        }
+    }
+
+    return {
+        installedRosDistros,
+        activeRosDistro: process.env.ROS_DISTRO,
+        colconPath
+    };
+}
