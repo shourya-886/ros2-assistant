@@ -23,6 +23,11 @@
         "command": "ros2-assistant.goBack",
         "title": "Go Back",
         "icon": "$(arrow-left)"
+      },
+      {
+        "command": "ros2-assistant.openLaunchManager",
+        "title": "ROS 2 Assistant: Open Launch Manager",
+        "icon": "$(rocket)"
       }
     ],
     "menus": {
