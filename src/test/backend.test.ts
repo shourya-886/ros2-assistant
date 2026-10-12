@@ -1,5 +1,9 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { ProcessManager, formatProcessError } from '../core/processManager';
+import { detectRos2Workspace } from '../build/workspaceManager';
 
 suite('ROS 2 Assistant backend', () => {
     test('formats process errors consistently and prefers stderr', () => {
@@ -26,10 +30,6 @@ suite('ROS 2 Assistant backend', () => {
 });
 
 
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
-import { detectRos2Workspace } from '../build/workspaceManager';
 
 suite('ROS 2 workspace detection', () => {
     let temporaryRoot: string;
@@ -67,7 +67,7 @@ suite('ROS 2 workspace detection', () => {
         assert.strictEqual(result.packageManifestCount, 0);
     });
 
-    test('does not classify an ordinary source folder as a ROS 2 workspace', () => {
+    test('reports an ordinary src-only folder as incomplete rather than detected', () => {
         const projectRoot = path.join(temporaryRoot, 'ordinary_project');
         fs.mkdirSync(path.join(projectRoot, 'src'), { recursive: true });
 
