@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as path from 'path';
 import { EventEmitter } from 'events';
 import type { ChildProcess } from 'child_process';
 import { ProcessManager, processManager } from '../core/processManager';
@@ -65,7 +66,7 @@ export class BuildManager extends EventEmitter {
         }
         if (!options.workspaceRoot.trim() || !fs.existsSync(options.workspaceRoot)
             || !fs.statSync(options.workspaceRoot).isDirectory()
-            || !fs.existsSync(require('path').join(options.workspaceRoot, 'src'))
+            || !fs.existsSync(path.join(options.workspaceRoot, 'src'))
             || !fs.statSync(require('path').join(options.workspaceRoot, 'src')).isDirectory()) {
             throw new Error('The selected folder is not a valid ROS 2 workspace (src directory not found).');
         }
