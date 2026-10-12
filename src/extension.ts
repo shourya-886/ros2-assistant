@@ -980,6 +980,21 @@ class TopicEchoPanel {
             border-bottom: 1px solid var(--vscode-panel-border);
             padding-bottom: 8px;
         }
+        .toolbar {
+            display: flex;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .toolbar label {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        .toolbar input[type="checkbox"] {
+            margin: 0;
+        }
         .segment-container {
             display: flex;
             flex-direction: column;
@@ -999,6 +1014,12 @@ class TopicEchoPanel {
 </head>
 <body>
     <h2>Topic Stream: ${topicName}</h2>
+    <div class="toolbar">
+        <label for="autoScrollCheckbox">
+            <input id="autoScrollCheckbox" type="checkbox">
+            Auto-scroll
+        </label>
+    </div>
     <div id="output" class="segment-container">
         <div class="message-card">Waiting for messages on ${topicName}...</div>
     </div>
@@ -1006,6 +1027,7 @@ class TopicEchoPanel {
     <script>
         const vscode = acquireVsCodeApi();
         const outputDiv = document.getElementById('output');
+        const autoScrollCheckbox = document.getElementById('autoScrollCheckbox');
         let initialCleared = false;
 
         window.addEventListener('message', event => {
@@ -1019,7 +1041,9 @@ class TopicEchoPanel {
                 card.className = 'message-card';
                 card.textContent = message.data;
                 outputDiv.appendChild(card);
-                outputDiv.scrollTop = outputDiv.scrollHeight;
+                if (autoScrollCheckbox.checked) {
+                    outputDiv.scrollTop = outputDiv.scrollHeight;
+                }
             }
         });
     </script>
