@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { randomBytes } from 'crypto';
 import { LaunchManager } from './launchManager';
-import type { LaunchFileInfo, LaunchOutput, LaunchSessionSnapshot } from './launchManager';
+import type { LaunchFileInfo, LaunchOutput } from './launchManager';
 import { discoverLaunchFiles } from './launchManager';
 
 export class LaunchManagerDashboard implements vscode.Disposable {

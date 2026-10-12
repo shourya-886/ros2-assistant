@@ -304,11 +304,18 @@ export class LaunchManager extends EventEmitter {
         if (!this.ros.isConfigured) {
             throw new Error('ROS 2 environment has not been configured.');
         }
+        if (this.children.size >= 10) {
+            throw new Error('The Launch Manager supports up to 10 simultaneous launch processes.');
+        }
         const workspaceRoot = path.resolve(launchFile.workspaceRoot);
+        const packagePath = path.resolve(launchFile.packagePath);
         const filePath = path.resolve(launchFile.filePath);
         const relative = path.relative(workspaceRoot, filePath);
-        if (!relative || relative.startsWith('..' + path.sep) || path.isAbsolute(relative) || !fs.existsSync(filePath)) {
-            throw new Error('The selected launch file is outside the workspace or no longer exists.');
+        const packageRelative = path.relative(packagePath, filePath);
+        if (!relative || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)
+            || !packageRelative || packageRelative.startsWith('..' + path.sep)
+            || path.basename(filePath) !== launchFile.fileName || !fs.existsSync(filePath)) {
+            throw new Error('The selected launch file is outside its workspace package or no longer exists.');
         }
         if (!/^[a-z][a-z0-9_]*$/.test(launchFile.packageName)) {
             throw new Error('Invalid ROS package name.');
@@ -389,6 +396,7 @@ export class LaunchManager extends EventEmitter {
                 snapshot.error = error;
             }
             this.children.delete(id);
+            this.trimHistory();
             this.emit('status', { ...snapshot });
         };
         child.once('error', error => finish('failed', null, null, error.message));
@@ -410,6 +418,18 @@ export class LaunchManager extends EventEmitter {
         session.status = 'stopped';
         this.emit('status', { ...session });
         return this.processes.terminate(child, 'SIGINT', 5000);
+    }
+
+    private trimHistory(): void {
+        const completed = [...this.sessions.values()]
+            .filter(session => session.status !== 'running')
+            .sort((a, b) => a.startedAt - b.startedAt);
+        while (completed.length > 50) {
+            const oldest = completed.shift();
+            if (oldest) {
+                this.sessions.delete(oldest.id);
+            }
+        }
     }
 
     async getNodes(): Promise<string[]> {

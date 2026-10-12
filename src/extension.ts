@@ -303,8 +303,7 @@ class Ros2TreeDataProvider implements vscode.TreeDataProvider<Ros2TreeItem>, vsc
                     command: 'ros2-assistant.selectItem',
                     title: 'Select Node View',
                     arguments: ['nodes']
-                }, new vscode.ThemeIcon('server'))
-,
+                }, new vscode.ThemeIcon('server')),
                 new Ros2TreeItem('Launch Manager', vscode.TreeItemCollapsibleState.None, 'root', {
                     command: 'ros2-assistant.openLaunchManager',
                     title: 'Open ROS 2 Launch Manager'
