@@ -64,6 +64,8 @@ export class LaunchManagerDashboard implements vscode.Disposable {
                 }
             } else if (message.command === 'refreshDiscovery') {
                 this.refreshDiscovery();
+            } else if (message.command === 'inspectArguments') {
+                void this.inspectArguments(message.filePath);
             } else if (message.command === 'startLaunch') {
                 this.startLaunch(message.filePath, message.arguments ?? {}, String(message.extraArguments ?? ''));
             } else if (message.command === 'stopLaunch') {
@@ -96,6 +98,24 @@ export class LaunchManagerDashboard implements vscode.Disposable {
             packagesScanned: result.packagesScanned,
             scanLimitReached: result.scanLimitReached
         });
+    }
+
+    private async inspectArguments(filePath: unknown): Promise<void> {
+        const selected = this.discoveredFiles.find(file => file.filePath === path.resolve(String(filePath ?? '')));
+        if (!selected) {
+            return;
+        }
+        try {
+            const argumentsList = await this.manager.inspectLaunchArguments(selected);
+            this.post({ command: 'launchArguments', filePath: selected.filePath, arguments: argumentsList });
+        } catch (error) {
+            this.post({
+                command: 'launchArguments',
+                filePath: selected.filePath,
+                arguments: selected.arguments,
+                warning: error instanceof Error ? error.message : String(error)
+            });
+        }
     }
 
     private startLaunch(filePath: unknown, rawArguments: unknown, extraText: string): void {
@@ -289,19 +309,20 @@ function renderFiles() {
         fileList.appendChild(button);
     });
 }
-function selectFile(file) {
+function selectFile(file, inspectedArguments) {
     selectedFile = file;
     argumentDefaults = {};
     selectedTitle.textContent = file.packageName + ' / ' + file.fileName;
     selectedPath.textContent = file.relativePath;
     argumentContainer.replaceChildren();
-    if (!file.arguments.length) {
+    const launchArguments = inspectedArguments || file.arguments;
+    if (!launchArguments.length) {
         const hint = document.createElement('div');
         hint.className = 'empty';
         hint.textContent = 'No static launch arguments detected. Use the additional arguments field below if required.';
         argumentContainer.appendChild(hint);
     }
-    file.arguments.forEach(argument => {
+    launchArguments.forEach(argument => {
         const wrapper = document.createElement('div');
         wrapper.className = 'field';
         const label = document.createElement('label');
@@ -324,6 +345,7 @@ function selectFile(file) {
     });
     startButton.disabled = false;
     renderFiles();
+    if (!inspectedArguments) send('inspectArguments', { filePath: file.filePath });
 }
 function collectArguments() {
     const values = {};
@@ -480,6 +502,11 @@ window.addEventListener('message', event => {
         discoveryInfo.textContent = (message.packagesScanned || 0) + ' packages scanned' +
             ((message.issues || []).length ? ' · ' + message.issues.length + ' discovery warnings' : '');
         showNotice(message.error || '');
+    } else if (message.command === 'launchArguments') {
+        if (selectedFile && selectedFile.filePath === message.filePath) {
+            selectFile(selectedFile, message.arguments || []);
+            if (message.warning) showNotice('Argument inspection fell back to static parsing: ' + message.warning);
+        }
     } else if (message.command === 'sessions') {
         sessions = message.sessions || [];
         renderSessions();

@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { discoverLaunchFiles, parseLaunchArguments } from '../launch/launchManager';
+import { discoverLaunchFiles, parseLaunchArguments, parseRos2ShowArgs } from '../launch/launchManager';
 
 suite('ROS 2 launch discovery', () => {
     let temporaryRoot: string;
@@ -23,6 +23,23 @@ DeclareLaunchArgument(name="robot_name", default_value="robot")
         assert.deepStrictEqual(parseLaunchArguments(source, 'py'), [
             { name: 'use_sim_time', defaultValue: 'true', description: 'Use simulation clock' },
             { name: 'robot_name', defaultValue: 'robot', description: undefined }
+        ]);
+    });
+
+    test('parses arguments reported by the ROS 2 launch CLI', () => {
+        const output = `Arguments (pass arguments as '<name>:=<value>'):
+
+    'use_sim_time':
+        no description given
+        (default: 'false')
+
+    'robot_name':
+        Name of the robot
+        (default: 'bumperbot')
+`;
+        assert.deepStrictEqual(parseRos2ShowArgs(output), [
+            { name: 'use_sim_time', defaultValue: 'false', description: undefined },
+            { name: 'robot_name', defaultValue: 'bumperbot', description: 'Name of the robot' }
         ]);
     });
 

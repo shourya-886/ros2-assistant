@@ -212,6 +212,39 @@ export function parseLaunchArguments(content: string, extension: string): Launch
     return result;
 }
 
+/** Parses the structured argument listing emitted by ros2 launch <file> --show-args. */
+export function parseRos2ShowArgs(output: string): LaunchArgument[] {
+    const lines = output.split(/\r?\n/);
+    const result: LaunchArgument[] = [];
+    for (let index = 0; index < lines.length; index++) {
+        const match = lines[index].match(/^\s{4,}['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?:\s*$/);
+        if (!match) {
+            continue;
+        }
+        let defaultValue: string | undefined;
+        let description: string | undefined;
+        for (let lookahead = index + 1; lookahead < Math.min(lines.length, index + 5); lookahead++) {
+            const line = lines[lookahead].trim();
+            if (!line) {
+                continue;
+            }
+            const defaultMatch = line.match(/^\(default:\s*(.*?)\)\s*$/);
+            if (defaultMatch) {
+                defaultValue = defaultMatch[1].replace(/^['"]|['"]$/g, '');
+                break;
+            }
+            if (/^[A-Za-z_][A-Za-z0-9_]*['"]?:\s*$/.test(line)) {
+                break;
+            }
+            if (line !== 'no description given' && !line.startsWith('(default:')) {
+                description = line;
+            }
+        }
+        result.push({ name: match[1], defaultValue, description });
+    }
+    return result;
+}
+
 /** Discovers launch files below package launch/ directories in a ROS 2 workspace src tree. */
 export function discoverLaunchFiles(workspaceRoot: string): LaunchDiscoveryResult {
     const root = path.resolve(workspaceRoot);
@@ -359,14 +392,19 @@ export class LaunchManager extends EventEmitter {
             status: 'running'
         };
         const script = this.ros.withEnvironment(
-            'package="$1" && launch_file="$2" && shift 2 && exec ros2 launch "$package" "$launch_file" "$@"'
+            'if [ -f "$ROS2_WORKSPACE_SETUP" ]; then source "$ROS2_WORKSPACE_SETUP"; fi'
+            + ' && launch_file="$1" && shift && exec ros2 launch "$launch_file" "$@"'
         );
         const child = this.processes.spawn(
             'bash',
-            ['-c', script, 'ros2-launch', launchFile.packageName, launchFile.fileName, ...cliArguments],
+            ['-c', script, 'ros2-launch', filePath, ...cliArguments],
             {
                 cwd: workspaceRoot,
-                env: { ...process.env, PYTHONUNBUFFERED: '1' },
+                env: {
+                    ...process.env,
+                    PYTHONUNBUFFERED: '1',
+                    ROS2_WORKSPACE_SETUP: path.join(workspaceRoot, 'install', 'setup.bash')
+                },
                 stdio: ['ignore', 'pipe', 'pipe']
             }
         );
@@ -418,6 +456,40 @@ export class LaunchManager extends EventEmitter {
         session.status = 'stopped';
         this.emit('status', { ...session });
         return this.processes.terminate(child, 'SIGINT', 5000);
+    }
+
+    /** Uses the ROS 2 CLI to evaluate launch arguments, falling back to static discovery in the dashboard. */
+    async inspectLaunchArguments(launchFile: LaunchFileInfo): Promise<LaunchArgument[]> {
+        if (!this.ros.isConfigured) {
+            throw new Error('ROS 2 environment has not been configured.');
+        }
+        const filePath = path.resolve(launchFile.filePath);
+        if (!fs.existsSync(filePath) || path.basename(filePath) !== launchFile.fileName) {
+            throw new Error('The selected launch file no longer exists.');
+        }
+        const script = this.ros.withEnvironment(
+            'if [ -f "$ROS2_WORKSPACE_SETUP" ]; then source "$ROS2_WORKSPACE_SETUP"; fi'
+            + ' && exec ros2 launch "$1" --show-args'
+        );
+        return new Promise((resolve, reject) => {
+            this.processes.execFile(
+                'bash',
+                ['-c', script, 'ros2-launch-args', filePath],
+                {
+                    env: {
+                        ...process.env,
+                        ROS2_WORKSPACE_SETUP: path.join(path.resolve(launchFile.workspaceRoot), 'install', 'setup.bash')
+                    }
+                },
+                (error, stdout, stderr) => {
+                    if (error) {
+                        reject(new Error((stderr || error.message).trim()));
+                        return;
+                    }
+                    resolve(parseRos2ShowArgs(stdout));
+                }
+            );
+        });
     }
 
     private trimHistory(): void {
