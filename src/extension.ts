@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { exec, spawn, ChildProcess, ChildProcessWithoutNullStreams } from 'child_process';
+import { exec, execFile, spawn, ChildProcess, ChildProcessWithoutNullStreams } from 'child_process';
 
 // Must match the shell where your ROS 2 nodes run (domain and RMW from ~/.bashrc).
 // Mixing RMW implementations (e.g. Fast DDS client with a CycloneDDS server) breaks service calls.
@@ -66,6 +66,28 @@ export function formatGoalOutput(raw: string): string {
         return 'Waiting for the action server...';
     }
     return raw.slice(idx).replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/**
+ * Reads the .srv / .action / .msg definition for a type such as "pkg/action/Name" straight from the
+ * installed packages. `ros2 interface` is not installed in every ROS setup, so it is not used.
+ */
+export function readInterfaceDefinition(
+    interfaceType: string,
+    callback: (error: Error | null, text: string, stderr: string) => void,
+    setup: string = ROS_SETUP
+) {
+    const script = [
+        setup,
+        'IFS=/ read -r pkg kind name <<< "$IFACE_TYPE"',
+        'IFS=: read -ra prefixes <<< "$AMENT_PREFIX_PATH"',
+        'for p in "${prefixes[@]}"; do f="$p/share/$pkg/$kind/$name.$kind"; if [ -f "$f" ]; then cat "$f"; exit 0; fi; done',
+        'echo "definition file for $IFACE_TYPE not found in AMENT_PREFIX_PATH" >&2; exit 1'
+    ].join(' && ').replace('done && echo', 'done; echo');
+
+    execFile('bash', ['-c', script], { env: { ...process.env, IFACE_TYPE: interfaceType } }, (error, stdout, stderr) => {
+        callback(error, stdout, stderr);
+    });
 }
 
 export function activate(context: vscode.ExtensionContext) {
@@ -633,6 +655,9 @@ class ServiceCallPanel {
     private readonly _panel: vscode.WebviewPanel;
     private _disposables: vscode.Disposable[] = [];
     private serviceType: string = '';
+    private started = false;
+    private typeMessage: object | undefined;
+    private template: string | undefined;
 
     public static createOrShow(extensionUri: vscode.Uri, serviceName: string) {
         const column = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : undefined;
@@ -662,14 +687,31 @@ class ServiceCallPanel {
 
         this._panel.webview.onDidReceiveMessage(
             message => {
-                if (message.command === 'callService') {
+                if (message.command === 'ready') {
+                    this._onReady();
+                } else if (message.command === 'callService') {
                     this._executeServiceCall(message.args);
                 }
             },
             null,
             this._disposables
         );
+    }
 
+    // The webview announces itself once its script is listening; only then do we send data,
+    // because messages posted earlier are silently dropped.
+    private _onReady() {
+        if (this.started) {
+            // Webview was reloaded: replay what we already know.
+            if (this.typeMessage) {
+                this._panel.webview.postMessage(this.typeMessage);
+            }
+            if (this.template !== undefined) {
+                this._panel.webview.postMessage({ command: 'setTemplateOnce', template: this.template });
+            }
+            return;
+        }
+        this.started = true;
         this._fetchServiceType();
     }
 
@@ -679,66 +721,36 @@ class ServiceCallPanel {
         exec(cmd, { env: process.env }, (error, stdout, stderr) => {
             if (error || stderr) {
                 this.serviceType = 'Unknown';
-                this._panel.webview.postMessage({
+                this.typeMessage = {
                     command: 'initType',
                     serviceType: 'Unknown (Check terminal)',
                     error: stderr || error?.message
-                });
+                };
+                this._panel.webview.postMessage(this.typeMessage);
                 return;
             }
             this.serviceType = stdout.trim();
-            this._panel.webview.postMessage({
-                command: 'initType',
-                serviceType: this.serviceType
-            });
+            this.typeMessage = { command: 'initType', serviceType: this.serviceType };
+            this._panel.webview.postMessage(this.typeMessage);
 
             this._fetchInterfaceTemplate(this.serviceType);
         });
     }
 
     private _fetchInterfaceTemplate(serviceType: string) {
-        const cmd = `bash -c "${ROS_SETUP} && ros2 interface show ${serviceType}"`;
-
-        exec(cmd, { env: process.env }, (error, stdout) => {
-            if (error || !stdout) {
+        readInterfaceDefinition(serviceType, (error, stdout, stderr) => {
+            if (error || !stdout.trim()) {
+                this.template = '{}';
+                const reason = (stderr || error?.message || 'empty output').trim();
                 this._panel.webview.postMessage({
-                    command: 'setTemplateOnce',
-                    template: '{\n  a: 0,\n  b: 0\n}'
+                    command: 'serviceResponse',
+                    data: `Could not load the request template (using {}):\n${reason}`
                 });
-                return;
+            } else {
+                // The request section is everything before the first '---'.
+                this.template = buildGoalTemplate(stdout);
             }
-
-            const lines = stdout.split(/\r?\n/);
-            let isRequest = true;
-            let reqFields: string[] = [];
-
-            for (let line of lines) {
-                const trimmed = line.trim();
-                if (trimmed === '---') {
-                    isRequest = false;
-                    continue;
-                }
-                if (isRequest && trimmed && !trimmed.startsWith('#')) {
-                    const parts = trimmed.split(/\s+/);
-                    if (parts.length >= 2) {
-                        const fieldName = parts[parts.length - 1];
-                        reqFields.push(fieldName);
-                    }
-                }
-            }
-
-            let yamlTemplate = '{\n';
-            if (reqFields.length > 0) {
-                reqFields.forEach((field, index) => {
-                    yamlTemplate += `  ${field}: 0${index === reqFields.length - 1 ? '' : ','}\n`;
-                });
-            }
-            yamlTemplate += '}';
-
-            this._panel.webview.postMessage({
-                command: 'setTemplateOnce',
-                template: yamlTemplate
-            });
+            this._panel.webview.postMessage({ command: 'setTemplateOnce', template: this.template });
         });
     }
 
@@ -880,7 +892,7 @@ class ServiceCallPanel {
 
     <div class="input-group">
         <label for="args-input"><strong>Request Arguments Template:</strong></label>
-        <textarea id="args-input">{\n  a: 0,\n  b: 0\n}</textarea>
+        <textarea id="args-input">{}</textarea>
         <button id="call-btn">Call Service</button>
     </div>
 
@@ -898,9 +910,11 @@ class ServiceCallPanel {
 
         let currentArgs = argsInput.value;
         let templateLoaded = false;
+        let userEdited = false;
 
         argsInput.addEventListener('input', (e) => {
             currentArgs = e.target.value;
+            userEdited = true;
         });
 
         callBtn.addEventListener('click', () => {
@@ -918,7 +932,7 @@ class ServiceCallPanel {
                     outputPre.textContent = 'Error fetching type: ' + message.error;
                 }
             } else if (message.command === 'setTemplateOnce') {
-                if (!templateLoaded) {
+                if (!templateLoaded && !userEdited) {
                     argsInput.value = message.template;
                     currentArgs = message.template;
                     templateLoaded = true;
@@ -929,6 +943,8 @@ class ServiceCallPanel {
                 outputPre.textContent = message.data;
             }
         });
+
+        vscode.postMessage({ command: 'ready' });
     </script>
 </body>
 </html>`;
@@ -959,6 +975,9 @@ class ActionGoalPanel {
     private actionType: string = '';
     private goalProcess: ChildProcess | undefined;
     private cancelled = false;
+    private started = false;
+    private typeMessage: object | undefined;
+    private template: string | undefined;
 
     public static createOrShow(extensionUri: vscode.Uri, actionName: string) {
         const column = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : undefined;
@@ -988,7 +1007,9 @@ class ActionGoalPanel {
 
         this._panel.webview.onDidReceiveMessage(
             message => {
-                if (message.command === 'sendGoal') {
+                if (message.command === 'ready') {
+                    this._onReady();
+                } else if (message.command === 'sendGoal') {
                     this._sendGoal(message.args);
                 } else if (message.command === 'cancelGoal') {
                     this._cancelGoal();
@@ -997,7 +1018,22 @@ class ActionGoalPanel {
             null,
             this._disposables
         );
+    }
 
+    // The webview announces itself once its script is listening; only then do we send data,
+    // because messages posted earlier are silently dropped.
+    private _onReady() {
+        if (this.started) {
+            // Webview was reloaded: replay what we already know.
+            if (this.typeMessage) {
+                this._post(this.typeMessage);
+            }
+            if (this.template !== undefined) {
+                this._post({ command: 'setTemplateOnce', template: this.template });
+            }
+            return;
+        }
+        this.started = true;
         this._fetchActionType();
     }
 
@@ -1012,27 +1048,31 @@ class ActionGoalPanel {
             const type = error ? undefined : parseActionType(stdout, this.actionName);
             if (!type) {
                 this.actionType = 'Unknown';
-                this._post({
+                this.typeMessage = {
                     command: 'initType',
                     actionType: 'Unknown (is the action server running?)',
                     error: stderr || error?.message
-                });
+                };
+                this._post(this.typeMessage);
                 return;
             }
             this.actionType = type;
-            this._post({ command: 'initType', actionType: type });
+            this.typeMessage = { command: 'initType', actionType: type };
+            this._post(this.typeMessage);
             this._fetchGoalTemplate(type);
         });
     }
 
     private _fetchGoalTemplate(actionType: string) {
-        const cmd = `bash -c "${ROS_SETUP} && ros2 interface show ${actionType}"`;
-
-        exec(cmd, { env: process.env }, (error, stdout) => {
-            this._post({
-                command: 'setTemplateOnce',
-                template: error || !stdout ? '{}' : buildGoalTemplate(stdout)
-            });
+        readInterfaceDefinition(actionType, (error, stdout, stderr) => {
+            if (error || !stdout.trim()) {
+                this.template = '{}';
+                const reason = (stderr || error?.message || 'empty output').trim();
+                this._post({ command: 'goalOutput', data: `Could not load the goal template (using {}):\n${reason}` });
+            } else {
+                this.template = buildGoalTemplate(stdout);
+            }
+            this._post({ command: 'setTemplateOnce', template: this.template });
         });
     }
 
@@ -1221,6 +1261,11 @@ class ActionGoalPanel {
         const outputPre = document.getElementById('output');
 
         let templateLoaded = false;
+        let userEdited = false;
+
+        goalInput.addEventListener('input', () => {
+            userEdited = true;
+        });
 
         sendBtn.addEventListener('click', () => {
             vscode.postMessage({ command: 'sendGoal', args: goalInput.value });
@@ -1238,7 +1283,7 @@ class ActionGoalPanel {
                     outputPre.textContent = 'Error fetching type: ' + message.error;
                 }
             } else if (message.command === 'setTemplateOnce') {
-                if (!templateLoaded) {
+                if (!templateLoaded && !userEdited) {
                     goalInput.value = message.template;
                     templateLoaded = true;
                 }
@@ -1249,6 +1294,8 @@ class ActionGoalPanel {
                 outputPre.textContent = message.data;
             }
         });
+
+        vscode.postMessage({ command: 'ready' });
     </script>
 </body>
 </html>`;
