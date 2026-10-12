@@ -28,12 +28,20 @@ export function activate(context: vscode.ExtensionContext) {
         context.subscriptions.push(selectDisposable);
 
         // Command to open Topic Echo Webview tab
-        const inspectDisposable = vscode.commands.registerCommand('ros2-assistant.inspectItem', (item: Ros2TreeItem) => {
+        const inspectTopicDisposable = vscode.commands.registerCommand('ros2-assistant.inspectItem', (item: Ros2TreeItem) => {
             if (item.viewType === 'topics') {
                 TopicEchoPanel.createOrShow(context.extensionUri, item.label);
             }
         });
-        context.subscriptions.push(inspectDisposable);
+        context.subscriptions.push(inspectTopicDisposable);
+
+        // Command to open Node Info Webview tab
+        const inspectNodeDisposable = vscode.commands.registerCommand('ros2-assistant.inspectNode', (item: Ros2TreeItem) => {
+            if (item.viewType === 'nodes') {
+                NodeInfoPanel.createOrShow(context.extensionUri, item.label);
+            }
+        });
+        context.subscriptions.push(inspectNodeDisposable);
 
         console.log('ROS2 Assistant successfully activated!');
     } catch (error) {
@@ -120,8 +128,11 @@ class Ros2TreeDataProvider implements vscode.TreeDataProvider<Ros2TreeItem>, vsc
                     item,
                     vscode.TreeItemCollapsibleState.None,
                     this.currentView,
-                    // Enable click handler to inspect topics
-                    this.currentView === 'topics' ? {
+                    this.currentView === 'nodes' ? {
+                        command: 'ros2-assistant.inspectNode',
+                        title: 'Inspect Node Info',
+                        arguments: [new Ros2TreeItem(item, vscode.TreeItemCollapsibleState.None, 'nodes')]
+                    } : this.currentView === 'topics' ? {
                         command: 'ros2-assistant.inspectItem',
                         title: 'Echo Topic Messages',
                         arguments: [new Ros2TreeItem(item, vscode.TreeItemCollapsibleState.None, 'topics')]
@@ -214,7 +225,6 @@ class TopicEchoPanel {
     public static createOrShow(extensionUri: vscode.Uri, topicName: string) {
         const column = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : undefined;
 
-        // If panel already exists for this topic, reveal it
         if (TopicEchoPanel.currentPanels.has(topicName)) {
             TopicEchoPanel.currentPanels.get(topicName)!._panel.reveal(column);
             return;
@@ -238,7 +248,6 @@ class TopicEchoPanel {
 
         this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
 
-        // Start streaming ros2 topic echo
         this._startEchoProcess();
     }
 
@@ -330,6 +339,192 @@ class TopicEchoPanel {
             this._process.kill();
         }
 
+        this._panel.dispose();
+
+        while (this._disposables.length) {
+            const x = this._disposables.pop();
+            if (x) {
+                x.dispose();
+            }
+        }
+    }
+}
+
+/**
+ * Manages Node Info Webview Panels
+ */
+class NodeInfoPanel {
+    public static currentPanels: Map<string, NodeInfoPanel> = new Map();
+    private readonly _panel: vscode.WebviewPanel;
+    private _disposables: vscode.Disposable[] = [];
+
+    public static createOrShow(extensionUri: vscode.Uri, nodeName: string) {
+        const column = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : undefined;
+
+        if (NodeInfoPanel.currentPanels.has(nodeName)) {
+            NodeInfoPanel.currentPanels.get(nodeName)!._panel.reveal(column);
+            return;
+        }
+
+        const panel = vscode.window.createWebviewPanel(
+            'ros2NodeInfo',
+            `Node: ${nodeName}`,
+            column || vscode.ViewColumn.One,
+            {
+                enableScripts: true
+            }
+        );
+
+        NodeInfoPanel.currentPanels.set(nodeName, new NodeInfoPanel(panel, nodeName));
+    }
+
+    private constructor(panel: vscode.WebviewPanel, private readonly nodeName: string) {
+        this._panel = panel;
+        this._panel.webview.html = this._getHtmlForWebview(this.nodeName, 'Loading node information...');
+
+        this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
+
+        this._fetchNodeInfo();
+    }
+
+    private _fetchNodeInfo() {
+        const innerCmd = `export ROS_DOMAIN_ID=3 && source /opt/ros/humble/setup.bash && ros2 node info ${this.nodeName}`;
+        const cmd = `bash -c "${innerCmd}"`;
+
+        exec(cmd, { env: process.env }, (error, stdout, stderr) => {
+            if (error) {
+                this._panel.webview.postMessage({
+                    command: 'nodeInfoData',
+                    data: `Error executing command:\n${stderr || error.message}`
+                });
+                return;
+            }
+            this._panel.webview.postMessage({
+                command: 'nodeInfoData',
+                data: stdout
+            });
+        });
+    }
+
+    private _getHtmlForWebview(nodeName: string, initialContent: string): string {
+        return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Node Info: ${nodeName}</title>
+    <style>
+        body {
+            font-family: var(--vscode-editor-font-family, monospace);
+            padding: 15px;
+            background-color: var(--vscode-editor-background);
+            color: var(--vscode-editor-foreground);
+        }
+        h2 {
+            margin-top: 0;
+            color: var(--vscode-symbolIcon-interfaceForeground);
+            border-bottom: 1px solid var(--vscode-panel-border);
+            padding-bottom: 8px;
+        }
+        .segment-container {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            max-height: 85vh;
+            overflow-y: auto;
+        }
+        .section-card {
+            background-color: var(--vscode-editor-background);
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 6px;
+            padding: 12px;
+        }
+        .section-title {
+            font-weight: bold;
+            color: var(--vscode-symbolIcon-keywordForeground, #4fc1ff);
+            margin-bottom: 8px;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        pre {
+            background-color: var(--vscode-textCodeBlock-background);
+            padding: 10px;
+            border-radius: 4px;
+            margin: 0;
+            white-space: pre-wrap;
+            word-break: break-all;
+            font-size: 12px;
+            color: var(--vscode-editor-foreground);
+        }
+    </style>
+</head>
+<body>
+    <h2>Node Info: ${nodeName}</h2>
+    <div id="output" class="segment-container">
+        <div class="section-card">
+            <pre>${initialContent}</pre>
+        </div>
+    </div>
+
+    <script>
+        const vscode = acquireVsCodeApi();
+        const outputDiv = document.getElementById('output');
+
+        window.addEventListener('message', event => {
+            const message = event.data;
+            if (message.command === 'nodeInfoData') {
+                outputDiv.innerHTML = '';
+                const rawText = message.data;
+
+                const rawSections = rawText.split(/(?=\\n[A-Za-z\\s]+:)/);
+
+                if (rawSections.length === 0 || rawText.trim() === '') {
+                    const card = document.createElement('div');
+                    card.className = 'section-card';
+                    card.innerHTML = '<pre>' + (rawText || 'No information returned.') + '</pre>';
+                    outputDiv.appendChild(card);
+                } else {
+                    rawSections.forEach(sec => {
+                        const trimmed = sec.trim();
+                        if (trimmed.length > 0) {
+                            const lines = trimmed.split('\\n');
+                            let title = '';
+                            let content = trimmed;
+
+                            if (lines[0].endsWith(':')) {
+                                title = lines[0].slice(0, -1).trim();
+                                content = lines.slice(1).join('\\n').trim();
+                            }
+
+                            const card = document.createElement('div');
+                            card.className = 'section-card';
+                            
+                            if (title) {
+                                const titleDiv = document.createElement('div');
+                                titleDiv.className = 'section-title';
+                                titleDiv.textContent = title;
+                                card.appendChild(titleDiv);
+                            }
+
+                            const pre = document.createElement('pre');
+                            pre.textContent = content || 'None';
+                            card.appendChild(pre);
+
+                            outputDiv.appendChild(card);
+                        }
+                    });
+                }
+            }
+        });
+    </script>
+</body>
+</html>`;
+    }
+
+    public dispose() {
+        NodeInfoPanel.currentPanels.delete(this.nodeName);
         this._panel.dispose();
 
         while (this._disposables.length) {
