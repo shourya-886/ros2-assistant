@@ -23,9 +23,14 @@ export class LaunchManagerDashboard implements vscode.Disposable {
         workspaceRoots: string[]
     ): void {
         if (LaunchManagerDashboard.currentPanel) {
-            LaunchManagerDashboard.currentPanel.workspaceRoots = workspaceRoots;
-            LaunchManagerDashboard.currentPanel.panel.reveal(vscode.ViewColumn.Active);
-            LaunchManagerDashboard.currentPanel.refreshDiscovery();
+            const current = LaunchManagerDashboard.currentPanel;
+            current.workspaceRoots = workspaceRoots;
+            if (!workspaceRoots.includes(current.selectedWorkspace)) {
+                current.selectedWorkspace = workspaceRoots[0] ?? '';
+            }
+            current.panel.reveal(vscode.ViewColumn.Active);
+            current.post({ command: 'workspaces', roots: current.workspaceRoots, selected: current.selectedWorkspace });
+            current.refreshDiscovery();
             return;
         }
         const panel = vscode.window.createWebviewPanel(
@@ -429,6 +434,9 @@ function renderOutput() {
 }
 function appendOutput(event) {
     const id = String(event.launchId);
+    if (!Object.prototype.hasOwnProperty.call(outputBySession, id) && Object.keys(outputBySession).length >= 25) {
+        delete outputBySession[Object.keys(outputBySession)[0]];
+    }
     outputBySession[id] = (outputBySession[id] || '') + event.data;
     if (outputBySession[id].length > 500000) {
         outputBySession[id] = outputBySession[id].slice(-500000);
