@@ -43,6 +43,14 @@ export function activate(context: vscode.ExtensionContext) {
         });
         context.subscriptions.push(inspectNodeDisposable);
 
+        // Command to open Service Call Webview tab
+        const inspectServiceDisposable = vscode.commands.registerCommand('ros2-assistant.inspectService', (item: Ros2TreeItem) => {
+            if (item.viewType === 'services') {
+                ServiceCallPanel.createOrShow(context.extensionUri, item.label);
+            }
+        });
+        context.subscriptions.push(inspectServiceDisposable);
+
         console.log('ROS2 Assistant successfully activated!');
     } catch (error) {
         console.error('Error during ROS2 Assistant activation:', error);
@@ -136,6 +144,10 @@ class Ros2TreeDataProvider implements vscode.TreeDataProvider<Ros2TreeItem>, vsc
                         command: 'ros2-assistant.inspectItem',
                         title: 'Echo Topic Messages',
                         arguments: [new Ros2TreeItem(item, vscode.TreeItemCollapsibleState.None, 'topics')]
+                    } : this.currentView === 'services' ? {
+                        command: 'ros2-assistant.inspectService',
+                        title: 'Call Service',
+                        arguments: [new Ros2TreeItem(item, vscode.TreeItemCollapsibleState.None, 'services')]
                     } : undefined,
                     new vscode.ThemeIcon(iconName)
                 ))
@@ -525,6 +537,294 @@ class NodeInfoPanel {
 
     public dispose() {
         NodeInfoPanel.currentPanels.delete(this.nodeName);
+        this._panel.dispose();
+
+        while (this._disposables.length) {
+            const x = this._disposables.pop();
+            if (x) {
+                x.dispose();
+            }
+        }
+    }
+}
+
+/**
+ * Manages Service Call Webview Panels
+ */
+/**
+ * Manages Service Call Webview Panels
+ */
+class ServiceCallPanel {
+    public static currentPanels: Map<string, ServiceCallPanel> = new Map();
+    private readonly _panel: vscode.WebviewPanel;
+    private _disposables: vscode.Disposable[] = [];
+    private serviceType: string = '';
+
+    public static createOrShow(extensionUri: vscode.Uri, serviceName: string) {
+        const column = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : undefined;
+
+        if (ServiceCallPanel.currentPanels.has(serviceName)) {
+            ServiceCallPanel.currentPanels.get(serviceName)!._panel.reveal(column);
+            return;
+        }
+
+        const panel = vscode.window.createWebviewPanel(
+            'ros2ServiceCall',
+            `Service: ${serviceName}`,
+            column || vscode.ViewColumn.One,
+            {
+                enableScripts: true
+            }
+        );
+
+        ServiceCallPanel.currentPanels.set(serviceName, new ServiceCallPanel(panel, serviceName));
+    }
+
+    private constructor(panel: vscode.WebviewPanel, private readonly serviceName: string) {
+        this._panel = panel;
+        this._panel.webview.html = this._getHtmlForWebview(this.serviceName, 'Fetching service type...');
+
+        this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
+
+        this._panel.webview.onDidReceiveMessage(
+            message => {
+                if (message.command === 'callService') {
+                    this._executeServiceCall(message.args);
+                }
+            },
+            null,
+            this._disposables
+        );
+
+        this._fetchServiceType();
+    }
+
+    private _fetchServiceType() {
+        const cmd = `bash -c "export ROS_DOMAIN_ID=3 && source /opt/ros/humble/setup.bash && ros2 service type ${this.serviceName}"`;
+
+        exec(cmd, { env: process.env }, (error, stdout, stderr) => {
+            if (error || stderr) {
+                this.serviceType = 'Unknown';
+                this._panel.webview.postMessage({
+                    command: 'initType',
+                    serviceType: 'Unknown (Check terminal)',
+                    error: stderr || error?.message
+                });
+                return;
+            }
+            this.serviceType = stdout.trim();
+            this._panel.webview.postMessage({
+                command: 'initType',
+                serviceType: this.serviceType
+            });
+
+            this._fetchInterfaceTemplate(this.serviceType);
+        });
+    }
+
+    private _fetchInterfaceTemplate(serviceType: string) {
+        const cmd = `bash -c "export ROS_DOMAIN_ID=3 && source /opt/ros/humble/setup.bash && ros2 interface show ${serviceType}"`;
+
+        exec(cmd, { env: process.env }, (error, stdout) => {
+            if (error || !stdout) {
+                // Fallback template if interface show fails
+                this._panel.webview.postMessage({
+                    command: 'setTemplate',
+                    template: '{\n  "a": 0,\n  "b": 0\n}'
+                });
+                return;
+            }
+
+            // Handle both \n and \r\n line endings
+            const lines = stdout.split(/\r?\n/);
+            let isRequest = true;
+            let reqFields: string[] = [];
+
+            for (let line of lines) {
+                const trimmed = line.trim();
+                if (trimmed === '---') {
+                    isRequest = false;
+                    continue;
+                }
+                if (isRequest && trimmed && !trimmed.startsWith('#')) {
+                    const parts = trimmed.split(/\s+/);
+                    if (parts.length >= 2) {
+                        const fieldName = parts[parts.length - 1];
+                        reqFields.push(fieldName);
+                    }
+                }
+            }
+
+            let yamlTemplate = '{\n';
+            if (reqFields.length > 0) {
+                reqFields.forEach((field, index) => {
+                    yamlTemplate += `  "${field}": 0${index === reqFields.length - 1 ? '' : ','}\n`;
+                });
+            }
+            yamlTemplate += '}';
+
+            this._panel.webview.postMessage({
+                command: 'setTemplate',
+                template: yamlTemplate
+            });
+        });
+    }
+
+    private _executeServiceCall(args: string) {
+        if (!this.serviceType || this.serviceType === 'Unknown') {
+            this._panel.webview.postMessage({
+                command: 'serviceResponse',
+                data: 'Error: Valid service type not found. Cannot execute call.'
+            });
+            return;
+        }
+
+        const flattenedArgs = args.replace(/\r?\n/g, ' ').replace(/\s+/g, ' ').trim();
+        const innerCmd = `export ROS_DOMAIN_ID=3 && source /opt/ros/humble/setup.bash && ros2 service call ${this.serviceName} ${this.serviceType} '${flattenedArgs}'`;
+        const cmd = `bash -c "${innerCmd}"`;
+
+        exec(cmd, { env: process.env }, (error, stdout, stderr) => {
+            if (error) {
+                this._panel.webview.postMessage({
+                    command: 'serviceResponse',
+                    data: `Error executing service call:\n${stderr || error.message}`
+                });
+                return;
+            }
+            // Send back the response output to display in the webview
+            this._panel.webview.postMessage({
+                command: 'serviceResponse',
+                data: stdout.trim() || 'Service called successfully.'
+            });
+        });
+    }
+
+    private _getHtmlForWebview(serviceName: string, statusText: string): string {
+        return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Service: ${serviceName}</title>
+    <style>
+        body {
+            font-family: var(--vscode-editor-font-family, monospace);
+            padding: 20px;
+            background-color: var(--vscode-editor-background);
+            color: var(--vscode-editor-foreground);
+        }
+        h2 {
+            margin-top: 0;
+            color: var(--vscode-symbolIcon-methodForeground, #dcdcaa);
+            border-bottom: 1px solid var(--vscode-panel-border);
+            padding-bottom: 8px;
+        }
+        .info-box {
+            margin-bottom: 15px;
+            font-size: 13px;
+            color: var(--vscode-descriptionForeground);
+        }
+        .input-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-bottom: 15px;
+        }
+        textarea {
+            width: 100%;
+            height: 90px;
+            background-color: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+            border: 1px solid var(--vscode-input-border);
+            padding: 8px;
+            font-family: monospace;
+            border-radius: 4px;
+            resize: vertical;
+        }
+        button {
+            background-color: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            border: none;
+            padding: 8px 14px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            align-self: flex-start;
+        }
+        button:hover {
+            background-color: var(--vscode-button-hoverBackground);
+        }
+        .section-card {
+            background-color: var(--vscode-textCodeBlock-background);
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 6px;
+            padding: 12px;
+            margin-top: 15px;
+        }
+        .section-title {
+            font-weight: bold;
+            color: var(--vscode-symbolIcon-keywordForeground, #4fc1ff);
+            margin-bottom: 8px;
+            font-size: 13px;
+        }
+        pre {
+            margin: 0;
+            white-space: pre-wrap;
+            word-break: break-all;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <h2>Service Call: ${serviceName}</h2>
+    <div class="info-box" id="type-info">Type: ${statusText}</div>
+
+    <div class="input-group">
+        <label for="args-input"><strong>Request Arguments Template:</strong></label>
+        <textarea id="args-input">{...}</textarea>
+        <button id="call-btn">Call Service</button>
+    </div>
+
+    <div class="section-card">
+        <div class="section-title">Response Output</div>
+        <pre id="output">Ready to send request...</pre>
+    </div>
+
+    <script>
+        const vscode = acquireVsCodeApi();
+        const typeInfo = document.getElementById('type-info');
+        const argsInput = document.getElementById('args-input');
+        const callBtn = document.getElementById('call-btn');
+        const outputPre = document.getElementById('output');
+
+        callBtn.addEventListener('click', () => {
+            outputPre.textContent = 'Calling service...';
+            vscode.postMessage({
+                command: 'callService',
+                args: argsInput.value
+            });
+        });
+
+        window.addEventListener('message', event => {
+            const message = event.data;
+            if (message.command === 'initType') {
+                typeInfo.textContent = 'Type: ' + message.serviceType;
+                if (message.error) {
+                    outputPre.textContent = 'Error fetching type: ' + message.error;
+                }
+            } else if (message.command === 'setTemplate') {
+                argsInput.value = message.template;
+            } else if (message.command === 'serviceResponse') {
+                outputPre.textContent = message.data;
+            }
+        });
+    </script>
+</body>
+</html>`;
+    }
+
+    public dispose() {
+        ServiceCallPanel.currentPanels.delete(this.serviceName);
         this._panel.dispose();
 
         while (this._disposables.length) {
