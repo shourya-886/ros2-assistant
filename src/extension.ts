@@ -625,6 +625,7 @@ class PublishTopicPanel {
 
         const publisherScript = [
             "import os, time, yaml, rclpy",
+            "from contextlib import suppress",
             "from rosidl_runtime_py.utilities import get_message",
             "from rosidl_runtime_py.set_message import set_message_fields",
             "topic=os.environ['ROS_TOPIC_NAME']; type_name=os.environ['ROS_MESSAGE_TYPE']",
@@ -645,8 +646,11 @@ class PublishTopicPanel {
             "        pub.publish(msg); node.get_logger().info('Published %d/%d to %s' % (i+1,count,topic))",
             "        rclpy.spin_once(node, timeout_sec=0.0)",
             "        if i+1<count: time.sleep(1.0/rate)",
+            "except KeyboardInterrupt:",
+            "    pass  # Stopping the publisher is an expected user action.",
             "finally:",
-            "    node.destroy_node(); rclpy.shutdown()"
+            "    with suppress(Exception): node.destroy_node()",
+            "    with suppress(Exception): rclpy.try_shutdown()"
         ].join('\n');
         const env = {
             ...process.env,
