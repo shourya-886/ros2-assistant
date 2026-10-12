@@ -148,6 +148,16 @@ suite('ROS 2 package discovery', () => {
         ]);
     });
 
+    test('recognizes an explicitly declared ament_python build type', () => {
+        const manifestPath = path.join(temporaryRoot, 'src', 'python_pkg', 'package.xml');
+        const manifest = '<package format="3"><name>python_pkg</name><version>0.1.0</version>' +
+            '<export><build_type>ament_python</build_type></export></package>';
+
+        const result = parseRosPackageManifest(manifest, manifestPath, temporaryRoot);
+
+        assert.strictEqual(result.buildType, 'ament_python');
+    });
+
     test('discovers nested packages in a stable order and skips generated folders', () => {
         const sourceDirectory = path.join(temporaryRoot, 'src');
         const firstPackage = path.join(sourceDirectory, 'drivers', 'camera_driver');
