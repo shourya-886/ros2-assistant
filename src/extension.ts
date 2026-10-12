@@ -151,16 +151,16 @@ class Ros2TreeDataProvider implements vscode.TreeDataProvider<Ros2TreeItem>, vsc
             cmd = 'ros2 action list';
         }
 
-        // Source both ROS2 Humble AND your workspace overlay (replace path with your actual workspace)
-        const fullCmd = `bash -c "source /opt/ros/humble/setup.bash && source  ~/robot_ws/install/setup.bash 2>/dev/null || true && ${cmd}"`;
-
+        // Run the command and capture the full raw output
+		const fullCmd = `bash -c "export ROS_DOMAIN_ID=3 && source /opt/ros/humble/setup.bash && ${cmd}"`;
         exec(fullCmd, (error, stdout) => {
             let items: string[] = [];
             if (!error && stdout) {
-                items = stdout
-                    .split('\n')
-                    .map(s => s.trim())
-                    .filter(s => s.length > 0);
+                const trimmed = stdout.trim();
+                if (trimmed.length > 0) {
+                    // Display the entire output as a single string item (or split by newlines if you want each line as its own row)
+                    items = [trimmed]; 
+                }
             }
 
             this.currentItems = items;
