@@ -23,22 +23,6 @@
         "command": "ros2-assistant.goBack",
         "title": "Go Back",
         "icon": "$(arrow-left)"
-      },
-      {
-        "command": "ros2-assistant.detectWorkspace",
-        "title": "ROS 2 Assistant: Detect Workspace"
-      },
-      {
-        "command": "ros2-assistant.discoverPackages",
-        "title": "ROS 2 Assistant: Discover Packages"
-      },
-      {
-        "command": "ros2-assistant.buildWorkspace",
-        "title": "ROS 2 Assistant: Build Workspace"
-      },
-      {
-        "command": "ros2-assistant.cancelBuild",
-        "title": "ROS 2 Assistant: Cancel Build"
       }
     ],
     "menus": {
