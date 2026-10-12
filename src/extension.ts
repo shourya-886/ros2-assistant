@@ -551,9 +551,6 @@ class NodeInfoPanel {
 /**
  * Manages Service Call Webview Panels
  */
-/**
- * Manages Service Call Webview Panels
- */
 class ServiceCallPanel {
     public static currentPanels: Map<string, ServiceCallPanel> = new Map();
     private readonly _panel: vscode.WebviewPanel;
@@ -627,15 +624,13 @@ class ServiceCallPanel {
 
         exec(cmd, { env: process.env }, (error, stdout) => {
             if (error || !stdout) {
-                // Fallback template if interface show fails
                 this._panel.webview.postMessage({
-                    command: 'setTemplate',
-                    template: '{\n  "a": 0,\n  "b": 0\n}'
+                    command: 'setTemplateOnce',
+                    template: '{\n  a: 0,\n  b: 0\n}'
                 });
                 return;
             }
 
-            // Handle both \n and \r\n line endings
             const lines = stdout.split(/\r?\n/);
             let isRequest = true;
             let reqFields: string[] = [];
@@ -658,13 +653,13 @@ class ServiceCallPanel {
             let yamlTemplate = '{\n';
             if (reqFields.length > 0) {
                 reqFields.forEach((field, index) => {
-                    yamlTemplate += `  "${field}": 0${index === reqFields.length - 1 ? '' : ','}\n`;
+                    yamlTemplate += `  ${field}: 0${index === reqFields.length - 1 ? '' : ','}\n`;
                 });
             }
             yamlTemplate += '}';
 
             this._panel.webview.postMessage({
-                command: 'setTemplate',
+                command: 'setTemplateOnce',
                 template: yamlTemplate
             });
         });
@@ -680,8 +675,13 @@ class ServiceCallPanel {
         }
 
         const flattenedArgs = args.replace(/\r?\n/g, ' ').replace(/\s+/g, ' ').trim();
-        const innerCmd = `export ROS_DOMAIN_ID=3 && source /opt/ros/humble/setup.bash && ros2 service call ${this.serviceName} ${this.serviceType} '${flattenedArgs}'`;
+        const innerCmd = `export ROS_DOMAIN_ID=3 && source /opt/ros/humble/setup.bash && ros2 service call ${this.serviceName} ${this.serviceType} "${flattenedArgs}"`;
         const cmd = `bash -c "${innerCmd}"`;
+
+        this._panel.webview.postMessage({
+            command: 'serviceExecuting',
+            info: `Calling service: ${this.serviceName} (${this.serviceType})\nPayload: "${flattenedArgs}"\nWaiting for response...`
+        });
 
         exec(cmd, { env: process.env }, (error, stdout, stderr) => {
             if (error) {
@@ -691,7 +691,6 @@ class ServiceCallPanel {
                 });
                 return;
             }
-            // Send back the response output to display in the webview
             this._panel.webview.postMessage({
                 command: 'serviceResponse',
                 data: stdout.trim() || 'Service called successfully.'
@@ -781,7 +780,7 @@ class ServiceCallPanel {
 
     <div class="input-group">
         <label for="args-input"><strong>Request Arguments Template:</strong></label>
-        <textarea id="args-input">{...}</textarea>
+        <textarea id="args-input">{\n  a: 0,\n  b: 0\n}</textarea>
         <button id="call-btn">Call Service</button>
     </div>
 
@@ -797,11 +796,17 @@ class ServiceCallPanel {
         const callBtn = document.getElementById('call-btn');
         const outputPre = document.getElementById('output');
 
+        let currentArgs = argsInput.value;
+        let templateLoaded = false;
+
+        argsInput.addEventListener('input', (e) => {
+            currentArgs = e.target.value;
+        });
+
         callBtn.addEventListener('click', () => {
-            outputPre.textContent = 'Calling service...';
             vscode.postMessage({
                 command: 'callService',
-                args: argsInput.value
+                args: currentArgs
             });
         });
 
@@ -812,8 +817,14 @@ class ServiceCallPanel {
                 if (message.error) {
                     outputPre.textContent = 'Error fetching type: ' + message.error;
                 }
-            } else if (message.command === 'setTemplate') {
-                argsInput.value = message.template;
+            } else if (message.command === 'setTemplateOnce') {
+                if (!templateLoaded) {
+                    argsInput.value = message.template;
+                    currentArgs = message.template;
+                    templateLoaded = true;
+                }
+            } else if (message.command === 'serviceExecuting') {
+                outputPre.textContent = message.info;
             } else if (message.command === 'serviceResponse') {
                 outputPre.textContent = message.data;
             }
