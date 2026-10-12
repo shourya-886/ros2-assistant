@@ -17,7 +17,25 @@
         "command": "ros2-assistant.helloWorld",
         "title": "Hello World"
       }
-    ]
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "ros2-sidebar",
+          "title": "ROS2 Assistant",
+          "icon": "$(robot)"
+        }
+      ]
+    },
+    "views": {
+      "ros2-sidebar": [
+        {
+          "id": "ros2View",
+          "name": "Nodes & Topics",
+          "icon": "$(list-tree)"
+        }
+      ]
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
