@@ -3,6 +3,7 @@ import { ChildProcess } from 'child_process';
 import { formatProcessError, processManager } from './core/processManager';
 import { rosEnvironment } from './core/rosEnvironment';
 import { detectRos2Workspace, detectRosBuildEnvironment } from './build/workspaceManager';
+import { discoverRos2Packages } from './build/packageDiscovery';
 import { existsSync, readdirSync } from 'fs';
 import * as path from 'path';
 
@@ -194,6 +195,90 @@ export async function activate(context: vscode.ExtensionContext) {
             }
         });
         context.subscriptions.push(detectWorkspaceDisposable);
+
+        const packageDiscoveryOutput = vscode.window.createOutputChannel('ROS 2 Packages');
+        context.subscriptions.push(packageDiscoveryOutput);
+
+        const discoverPackagesDisposable = vscode.commands.registerCommand('ros2-assistant.discoverPackages', async () => {
+            const folders = vscode.workspace.workspaceFolders;
+            if (!folders || folders.length === 0) {
+                vscode.window.showWarningMessage('Open a folder or ROS 2 workspace before discovering packages.');
+                return;
+            }
+
+            let selectedFolder = folders[0];
+            if (folders.length > 1) {
+                const selection = await vscode.window.showQuickPick(
+                    folders.map(folder => ({
+                        label: folder.name,
+                        description: folder.uri.fsPath,
+                        folder
+                    })),
+                    { placeHolder: 'Select the folder containing the ROS 2 workspace' }
+                );
+                if (!selection) {
+                    return;
+                }
+                selectedFolder = selection.folder;
+            }
+
+            const workspace = detectRos2Workspace(selectedFolder.uri.fsPath);
+            packageDiscoveryOutput.clear();
+            packageDiscoveryOutput.appendLine('ROS 2 PACKAGE DISCOVERY');
+            packageDiscoveryOutput.appendLine('=======================');
+            packageDiscoveryOutput.appendLine('Selected folder: ' + selectedFolder.uri.fsPath);
+
+            if (workspace.status !== 'detected' || !workspace.workspaceRoot || !workspace.sourceDirectory) {
+                packageDiscoveryOutput.appendLine('Workspace status: ' + workspace.status.toUpperCase());
+                packageDiscoveryOutput.appendLine(workspace.message);
+                packageDiscoveryOutput.show(true);
+                vscode.window.showWarningMessage('Package discovery requires a detected ROS 2 workspace.');
+                return;
+            }
+
+            const result = discoverRos2Packages(workspace.workspaceRoot, workspace.sourceDirectory);
+            packageDiscoveryOutput.appendLine('Workspace root: ' + result.workspaceRoot);
+            packageDiscoveryOutput.appendLine('Source directory: ' + result.sourceDirectory);
+            packageDiscoveryOutput.appendLine('Package manifests found: ' + result.manifestCount);
+            packageDiscoveryOutput.appendLine('Valid packages discovered: ' + result.packages.length);
+            packageDiscoveryOutput.appendLine('');
+
+            if (result.packages.length === 0) {
+                packageDiscoveryOutput.appendLine('No valid ROS 2 packages were discovered.');
+            } else {
+                for (const pkg of result.packages) {
+                    packageDiscoveryOutput.appendLine(pkg.name + (pkg.version ? ' (' + pkg.version + ')' : ''));
+                    packageDiscoveryOutput.appendLine('  Build type: ' + pkg.buildType);
+                    packageDiscoveryOutput.appendLine('  Path: ' + pkg.relativePath);
+                    packageDiscoveryOutput.appendLine('  Description: ' + (pkg.description || 'not specified'));
+                    packageDiscoveryOutput.appendLine('  Dependencies: ' + (pkg.dependencies.length
+                        ? pkg.dependencies.map(dependency => dependency.name + ' [' + dependency.kind + ']').join(', ')
+                        : 'none declared'));
+                }
+            }
+
+            if (result.duplicatePackageNames.length > 0) {
+                packageDiscoveryOutput.appendLine('');
+                packageDiscoveryOutput.appendLine('Duplicate package names: ' + result.duplicatePackageNames.join(', '));
+            }
+
+            if (result.issues.length > 0) {
+                packageDiscoveryOutput.appendLine('');
+                packageDiscoveryOutput.appendLine('DISCOVERY ISSUES');
+                for (const issue of result.issues) {
+                    packageDiscoveryOutput.appendLine(issue.manifestPath + ': ' + issue.message);
+                }
+            }
+
+            packageDiscoveryOutput.show(true);
+            const summary = 'Discovered ' + result.packages.length + ' package(s) from ' + result.manifestCount + ' manifest(s).';
+            if (result.issues.length > 0 || result.duplicatePackageNames.length > 0 || result.scanLimitReached) {
+                vscode.window.showWarningMessage(summary + ' Review the ROS 2 Packages output for issues.');
+            } else {
+                vscode.window.showInformationMessage(summary);
+            }
+        });
+        context.subscriptions.push(discoverPackagesDisposable);
 
         const extensionName = String(context.extension.packageJSON.displayName || context.extension.packageJSON.name || 'ROS2 Assistant');
         const detected = findCompatibleRosDistro();
