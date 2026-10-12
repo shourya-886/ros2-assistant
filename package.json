@@ -45,7 +45,7 @@
       "ros2-sidebar": [
         {
           "id": "ros2View",
-          "name": "Nodes & Topics",
+          "name": "ROS2 Assistant",
           "icon": "$(list-tree)"
         }
       ]
