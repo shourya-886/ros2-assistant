@@ -4,6 +4,7 @@ import { formatProcessError, processManager } from './core/processManager';
 import { rosEnvironment } from './core/rosEnvironment';
 import { detectRos2Workspace, detectRosBuildEnvironment } from './build/workspaceManager';
 import { discoverRos2Packages } from './build/packageDiscovery';
+import { BuildManager } from './build/buildManager';
 import { existsSync, readdirSync } from 'fs';
 import * as path from 'path';
 
@@ -323,6 +324,135 @@ export async function activate(context: vscode.ExtensionContext) {
 
         rosEnvironment.configure(detected.distro, domainId!);
         console.log(`ROS2 Assistant using ROS 2 ${detected.distro}, ROS_DOMAIN_ID=${domainId}`);
+
+        const buildOutput = vscode.window.createOutputChannel('ROS 2 Build');
+        context.subscriptions.push(buildOutput);
+
+        const buildManager = new BuildManager();
+        context.subscriptions.push({ dispose: () => buildManager.dispose() });
+
+        buildManager.on('started', build => {
+            buildOutput.appendLine('ROS 2 BUILD');
+            buildOutput.appendLine('==========');
+            buildOutput.appendLine('Workspace: ' + build.workspaceRoot);
+            buildOutput.appendLine('Command: ' + build.command);
+            buildOutput.appendLine('Started: ' + new Date(build.startedAt).toLocaleString());
+            buildOutput.appendLine('');
+            buildOutput.show(true);
+        });
+
+        buildManager.on('output', event => {
+            buildOutput.append(event.data);
+        });
+
+        buildManager.on('status', build => {
+            buildOutput.appendLine('');
+            buildOutput.appendLine('Build status: ' + build.status.toUpperCase());
+            buildOutput.appendLine('Exit code: ' + (build.exitCode ?? 'not available'));
+            if (build.error) {
+                buildOutput.appendLine('Error: ' + build.error);
+            }
+            if (build.status === 'succeeded') {
+                vscode.window.showInformationMessage('ROS 2 workspace build completed successfully.');
+            } else if (build.status === 'cancelled') {
+                vscode.window.showWarningMessage('ROS 2 workspace build was cancelled.');
+            } else {
+                vscode.window.showErrorMessage('ROS 2 workspace build failed. Review the ROS 2 Build output.');
+            }
+        });
+
+        const buildWorkspaceDisposable = vscode.commands.registerCommand('ros2-assistant.buildWorkspace', async () => {
+            if (buildManager.getActiveBuild()) {
+                vscode.window.showWarningMessage('A ROS 2 build is already running.');
+                return;
+            }
+
+            const folders = vscode.workspace.workspaceFolders;
+            if (!folders || folders.length === 0) {
+                vscode.window.showWarningMessage('Open a ROS 2 workspace before building.');
+                return;
+            }
+
+            let selectedFolder = folders[0];
+            if (folders.length > 1) {
+                const selection = await vscode.window.showQuickPick(
+                    folders.map(folder => ({
+                        label: folder.name,
+                        description: folder.uri.fsPath,
+                        folder
+                    })),
+                    { placeHolder: 'Select the ROS 2 workspace to build' }
+                );
+                if (!selection) {
+                    return;
+                }
+                selectedFolder = selection.folder;
+            }
+
+            const workspace = detectRos2Workspace(selectedFolder.uri.fsPath);
+            if (workspace.status !== 'detected' || !workspace.workspaceRoot) {
+                vscode.window.showWarningMessage('Build requires a detected ROS 2 workspace. ' + workspace.message);
+                return;
+            }
+
+            const discovery = discoverRos2Packages(workspace.workspaceRoot);
+            if (discovery.packages.length === 0) {
+                vscode.window.showWarningMessage('No valid ROS 2 packages were discovered. Fix package manifests before building.');
+                return;
+            }
+
+            const scope = await vscode.window.showQuickPick(
+                [
+                    { label: 'Build entire workspace', description: 'Build all packages in dependency order', value: 'all' },
+                    { label: 'Select packages', description: 'Build only the packages you choose', value: 'selected' }
+                ],
+                { placeHolder: 'Choose what to build' }
+            );
+            if (!scope) {
+                return;
+            }
+
+            let packages: string[] | undefined;
+            if (scope.value === 'selected') {
+                const selectedPackages = await vscode.window.showQuickPick(
+                    discovery.packages.map(pkg => ({
+                        label: pkg.name,
+                        description: pkg.relativePath,
+                        detail: pkg.buildType,
+                        packageName: pkg.name
+                    })),
+                    { canPickMany: true, placeHolder: 'Select one or more ROS 2 packages to build' }
+                );
+                if (!selectedPackages || selectedPackages.length === 0) {
+                    return;
+                }
+                packages = selectedPackages.map(pkg => pkg.packageName);
+            }
+
+            buildOutput.clear();
+            try {
+                buildManager.startBuild({
+                    workspaceRoot: workspace.workspaceRoot,
+                    packages,
+                    symlinkInstall: true
+                });
+            } catch (error) {
+                vscode.window.showErrorMessage(
+                    'Could not start ROS 2 build: ' + (error instanceof Error ? error.message : String(error))
+                );
+            }
+        });
+        context.subscriptions.push(buildWorkspaceDisposable);
+
+        const cancelBuildDisposable = vscode.commands.registerCommand('ros2-assistant.cancelBuild', () => {
+            if (!buildManager.cancelBuild()) {
+                vscode.window.showInformationMessage('There is no active ROS 2 build to cancel.');
+            } else {
+                buildOutput.appendLine('');
+                buildOutput.appendLine('Cancellation requested...');
+            }
+        });
+        context.subscriptions.push(cancelBuildDisposable);
 
         const helloDisposable = vscode.commands.registerCommand('ros2-assistant.helloWorld', () => {
             vscode.window.showInformationMessage('Hello World from ROS2 Assistant!');
