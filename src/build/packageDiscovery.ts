@@ -82,7 +82,9 @@ function decodeXmlEntities(value: string): string {
 function extractTagValues(xml: string, tagName: string): string[] {
     const escapedName = tagName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const expression = new RegExp(
-        String.raw\`<(?:[\\w.-]+:)?\${escapedName}(?:\\s+(?:"[^"]*"|'[^']*'|[^'">])*)?\\s*>([\\s\\S]*?)</(?:[\\w.-]+:)?\${escapedName}\\s*>\`,
+        '<(?:[\\w.-]+:)?' + escapedName
+        + "(?:\\s+(?:\"[^\"]*\"|'[^']*'|[^'\">])*)?\\s*>([\\s\\S]*?)</(?:[\\w.-]+:)?"
+        + escapedName + '\\s*>',
         'gi'
     );
 
