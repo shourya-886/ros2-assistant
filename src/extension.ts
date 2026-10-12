@@ -983,7 +983,19 @@ class TopicEchoPanel {
         .toolbar {
             display: flex;
             align-items: center;
+            gap: 16px;
             margin-bottom: 10px;
+        }
+        .toolbar button {
+            padding: 4px 10px;
+            color: var(--vscode-button-secondaryForeground);
+            background-color: var(--vscode-button-secondaryBackground);
+            border: 1px solid var(--vscode-button-border, transparent);
+            border-radius: 2px;
+            cursor: pointer;
+        }
+        .toolbar button:hover {
+            background-color: var(--vscode-button-secondaryHoverBackground);
         }
         .toolbar label {
             display: inline-flex;
@@ -1019,6 +1031,7 @@ class TopicEchoPanel {
             <input id="autoScrollCheckbox" type="checkbox">
             Auto-scroll
         </label>
+        <button id="clearMessagesButton" type="button">Clear messages</button>
     </div>
     <div id="output" class="segment-container">
         <div class="message-card">Waiting for messages on ${topicName}...</div>
@@ -1028,7 +1041,13 @@ class TopicEchoPanel {
         const vscode = acquireVsCodeApi();
         const outputDiv = document.getElementById('output');
         const autoScrollCheckbox = document.getElementById('autoScrollCheckbox');
+        const clearMessagesButton = document.getElementById('clearMessagesButton');
         let initialCleared = false;
+
+        clearMessagesButton.addEventListener('click', () => {
+            outputDiv.innerHTML = '';
+            initialCleared = true;
+        });
 
         window.addEventListener('message', event => {
             const message = event.data;
