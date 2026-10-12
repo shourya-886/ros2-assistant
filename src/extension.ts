@@ -1,6 +1,11 @@
 import * as vscode from 'vscode';
 import { exec, spawn, ChildProcessWithoutNullStreams } from 'child_process';
 
+// Must match the shell where your ROS 2 nodes run (domain and RMW from ~/.bashrc).
+// Mixing RMW implementations (e.g. Fast DDS client with a CycloneDDS server) breaks service calls.
+const ROS_SETUP =
+    'export ROS_DOMAIN_ID=3 && export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp && source /opt/ros/humble/setup.bash';
+
 export function activate(context: vscode.ExtensionContext) {
     console.log('ROS2 Assistant extension activation started.');
 
@@ -207,7 +212,7 @@ class Ros2TreeDataProvider implements vscode.TreeDataProvider<Ros2TreeItem>, vsc
             cmd = 'ros2 action list';
         }
 
-        const fullCmd = `bash -c "export ROS_DOMAIN_ID=3 && source /opt/ros/humble/setup.bash && ${cmd}"`;
+        const fullCmd = `bash -c "${ROS_SETUP} && ${cmd}"`;
 
         exec(fullCmd, { env: process.env }, (error, stdout) => {
             let items: string[] = [];
@@ -264,7 +269,7 @@ class TopicEchoPanel {
     }
 
     private _startEchoProcess() {
-        const echoCmd = `export ROS_DOMAIN_ID=3 && source /opt/ros/humble/setup.bash && ros2 topic echo ${this.topicName}`;
+        const echoCmd = `${ROS_SETUP} && ros2 topic echo ${this.topicName}`;
         this._process = spawn('bash', ['-c', echoCmd], { env: process.env });
 
         this._process.stdout.on('data', (data) => {
@@ -400,7 +405,7 @@ class NodeInfoPanel {
     }
 
     private _fetchNodeInfo() {
-        const innerCmd = `export ROS_DOMAIN_ID=3 && source /opt/ros/humble/setup.bash && ros2 node info ${this.nodeName}`;
+        const innerCmd = `${ROS_SETUP} && ros2 node info ${this.nodeName}`;
         const cmd = `bash -c "${innerCmd}"`;
 
         exec(cmd, { env: process.env }, (error, stdout, stderr) => {
@@ -597,7 +602,7 @@ class ServiceCallPanel {
     }
 
     private _fetchServiceType() {
-        const cmd = `bash -c "export ROS_DOMAIN_ID=3 && source /opt/ros/humble/setup.bash && ros2 service type ${this.serviceName}"`;
+        const cmd = `bash -c "${ROS_SETUP} && ros2 service type ${this.serviceName}"`;
 
         exec(cmd, { env: process.env }, (error, stdout, stderr) => {
             if (error || stderr) {
@@ -620,7 +625,7 @@ class ServiceCallPanel {
     }
 
     private _fetchInterfaceTemplate(serviceType: string) {
-        const cmd = `bash -c "export ROS_DOMAIN_ID=3 && source /opt/ros/humble/setup.bash && ros2 interface show ${serviceType}"`;
+        const cmd = `bash -c "${ROS_SETUP} && ros2 interface show ${serviceType}"`;
 
         exec(cmd, { env: process.env }, (error, stdout) => {
             if (error || !stdout) {
@@ -675,26 +680,46 @@ class ServiceCallPanel {
         }
 
         const flattenedArgs = args.replace(/\r?\n/g, ' ').replace(/\s+/g, ' ').trim();
-        const innerCmd = `export ROS_DOMAIN_ID=3 && source /opt/ros/humble/setup.bash && ros2 service call ${this.serviceName} ${this.serviceType} "${flattenedArgs}"`;
-        const cmd = `bash -c "${innerCmd}"`;
 
-        this._panel.webview.postMessage({
-            command: 'serviceExecuting',
-            info: `Calling service: ${this.serviceName} (${this.serviceType})\nPayload: "${flattenedArgs}"\nWaiting for response...`
+        // Values travel through environment variables, so no shell quoting can alter them.
+        const env = {
+            ...process.env,
+            PYTHONUNBUFFERED: '1',
+            SVC_NAME: this.serviceName,
+            SVC_TYPE: this.serviceType,
+            SVC_ARGS: flattenedArgs
+        };
+        const script = `${ROS_SETUP} && ros2 service call "$SVC_NAME" "$SVC_TYPE" "$SVC_ARGS"`;
+
+        let output = '';
+        const show = (text: string) => {
+            this._panel.webview.postMessage({ command: 'serviceResponse', data: text });
+        };
+        show(`Calling service: ${this.serviceName} (${this.serviceType})\nPayload: "${flattenedArgs}"\nWaiting for response...`);
+
+        const child = spawn('bash', ['-c', script], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+        const timeout = setTimeout(() => {
+            output += '\n[timeout] No response after 30s, killing ros2 process.';
+            show(output);
+            child.kill();
+        }, 30000);
+
+        const onData = (chunk: Buffer) => {
+            output += chunk.toString();
+            show(output);
+        };
+        child.stdout?.on('data', onData);
+        child.stderr?.on('data', onData);
+        child.on('error', (err) => {
+            clearTimeout(timeout);
+            show(`${output}\nFailed to start: ${err.message}`);
         });
-
-        exec(cmd, { env: process.env }, (error, stdout, stderr) => {
-            if (error) {
-                this._panel.webview.postMessage({
-                    command: 'serviceResponse',
-                    data: `Error executing service call:\n${stderr || error.message}`
-                });
-                return;
+        child.on('close', (code) => {
+            clearTimeout(timeout);
+            if (code !== 0) {
+                output += `\n[exit code ${code}]`;
             }
-            this._panel.webview.postMessage({
-                command: 'serviceResponse',
-                data: stdout.trim() || 'Service called successfully.'
-            });
+            show(output.trim() || 'Service called successfully.');
         });
     }
 
