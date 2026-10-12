@@ -69,7 +69,7 @@ export class BuildManager extends EventEmitter {
         if (!options.workspaceRoot.trim() || !fs.existsSync(options.workspaceRoot)
             || !fs.statSync(options.workspaceRoot).isDirectory()
             || !fs.existsSync(path.join(options.workspaceRoot, 'src'))
-            || !fs.statSync(require('path').join(options.workspaceRoot, 'src')).isDirectory()) {
+            || !fs.statSync(path.join(options.workspaceRoot, 'src')).isDirectory()) {
             throw new Error('The selected folder is not a valid ROS 2 workspace (src directory not found).');
         }
 
