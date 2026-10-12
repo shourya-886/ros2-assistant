@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { ProcessManager, formatProcessError } from '../core/processManager';
-import { detectRos2Workspace } from '../build/workspaceManager';
+import { detectRos2Workspace, detectRosBuildEnvironment } from '../build/workspaceManager';
 
 suite('ROS 2 Assistant backend', () => {
     test('formats process errors consistently and prefers stderr', () => {
@@ -85,5 +85,22 @@ suite('ROS 2 workspace detection', () => {
 
         assert.strictEqual(result.status, 'not-found');
         assert.strictEqual(result.workspaceRoot, undefined);
+    });
+
+    test('detects installed ROS distributions and an executable colcon on PATH', () => {
+        const rosInstallRoot = path.join(temporaryRoot, 'ros');
+        const humbleDirectory = path.join(rosInstallRoot, 'humble');
+        const binDirectory = path.join(temporaryRoot, 'bin');
+        fs.mkdirSync(humbleDirectory, { recursive: true });
+        fs.mkdirSync(binDirectory, { recursive: true });
+        fs.writeFileSync(path.join(humbleDirectory, 'setup.bash'), '');
+        const colconExecutable = path.join(binDirectory, 'colcon');
+        fs.writeFileSync(colconExecutable, '#!/bin/sh\\nexit 0\\n');
+        fs.chmodSync(colconExecutable, 0o755);
+
+        const result = detectRosBuildEnvironment(rosInstallRoot, binDirectory);
+
+        assert.deepStrictEqual(result.installedRosDistros, ['humble']);
+        assert.strictEqual(result.colconPath, colconExecutable);
     });
 });
