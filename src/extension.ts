@@ -2,10 +2,14 @@ import * as vscode from 'vscode';
 import { ChildProcess } from 'child_process';
 import { formatProcessError, processManager } from './core/processManager';
 import { rosEnvironment } from './core/rosEnvironment';
+import { LaunchManager } from './launch/launchManager';
+import { LaunchManagerDashboard } from './launch/launchDashboard';
 import { existsSync, readdirSync } from 'fs';
 import * as path from 'path';
 
 // ROS 2 release order. Rolling is also accepted because it tracks the newest ROS 2 development branch.
+let launchManager: LaunchManager | undefined;
+
 const ROS_DISTRO_ORDER: Record<string, number> = {
     humble: 2022,
     iron: 2023,
@@ -228,6 +232,14 @@ export async function activate(context: vscode.ExtensionContext) {
             }
         });
         context.subscriptions.push(inspectActionDisposable);
+
+        launchManager = new LaunchManager();
+        context.subscriptions.push({ dispose: () => launchManager?.dispose() });
+        const launchManagerDisposable = vscode.commands.registerCommand('ros2-assistant.openLaunchManager', () => {
+            const workspaceRoots = (vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri.fsPath);
+            LaunchManagerDashboard.createOrShow(launchManager!, workspaceRoots);
+        });
+        context.subscriptions.push(launchManagerDisposable);
     } catch (error) {
         console.error('Error during ROS2 Assistant activation:', error);
         vscode.window.showErrorMessage(`ROS2 Assistant failed to start: ${error instanceof Error ? error.message : String(error)}`);
@@ -291,7 +303,11 @@ class Ros2TreeDataProvider implements vscode.TreeDataProvider<Ros2TreeItem>, vsc
                     command: 'ros2-assistant.selectItem',
                     title: 'Select Node View',
                     arguments: ['nodes']
-                }, new vscode.ThemeIcon('server'))
+                }, new vscode.ThemeIcon('server')),
+                new Ros2TreeItem('Launch Manager', vscode.TreeItemCollapsibleState.None, 'root', {
+                    command: 'ros2-assistant.openLaunchManager',
+                    title: 'Open ROS 2 Launch Manager'
+                }, new vscode.ThemeIcon('rocket'))
             ]);
         } else {
             if (this.currentItems.length === 0) {
@@ -1628,7 +1644,9 @@ class ServiceCallPanel {
     }
 }
 
-export function deactivate() {}
+export function deactivate() {
+    launchManager?.dispose();
+}
 
 /**
  * Manages Action Goal Webview Panels
