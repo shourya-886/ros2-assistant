@@ -1,6 +1,6 @@
 import {
     exec as nodeExec, execFile as nodeExecFile, spawn as nodeSpawn,
-    type ChildProcess, type ExecException, type ExecOptionsWithStringEncoding,
+    type ChildProcess, type ExecException, type ExecFileException, type ExecOptionsWithStringEncoding,
     type ExecFileOptionsWithStringEncoding, type SpawnOptions
 } from 'child_process';
 import { EventEmitter } from 'events';
@@ -28,7 +28,7 @@ export class ProcessManager extends EventEmitter {
         return child;
     }
     execFile(file: string, args: readonly string[], options: ExecFileOptionsWithStringEncoding,
-        callback: (error: ExecException | null, stdout: string, stderr: string) => void): ChildProcess {
+        callback: (error: ExecFileException | null, stdout: string, stderr: string) => void): ChildProcess {
         const child = nodeExecFile(file, [...args], options, callback);
         this.track(child, [file, ...args].join(' '));
         return child;
@@ -49,11 +49,15 @@ export class ProcessManager extends EventEmitter {
         return [...this.processes.values()].map(item => ({ ...item }));
     }
     terminate(child: ChildProcess, signal: NodeJS.Signals = 'SIGTERM', escalationDelayMs = 3000): boolean {
-        if (child.exitCode !== null || child.signalCode !== null || child.killed) return false;
+        if (child.exitCode !== null || child.signalCode !== null || child.killed) {
+            return false;
+        }
         const sent = child.kill(signal);
         if (sent && escalationDelayMs > 0) {
             const timer = setTimeout(() => {
-                if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+                if (child.exitCode === null && child.signalCode === null) {
+                    child.kill('SIGKILL');
+                }
             }, escalationDelayMs);
             timer.unref();
         }
@@ -72,7 +76,9 @@ export class ProcessManager extends EventEmitter {
             this.emit('status', { ...snapshot }); this.trimHistory();
         });
         child.once('close', (exitCode, signal) => {
-            if (snapshot.state !== 'failed') snapshot.state = exitCode === 0 ? 'exited' : 'failed';
+            if (snapshot.state !== 'failed') {
+                snapshot.state = exitCode === 0 ? 'exited' : 'failed';
+            }
             snapshot.exitCode = exitCode; snapshot.signal = signal; snapshot.finishedAt = Date.now();
             this.emit('status', { ...snapshot }); this.trimHistory();
         });
@@ -85,10 +91,16 @@ export class ProcessManager extends EventEmitter {
         this.emit(stream, event);
     }
     private trimHistory(): void {
-        if (this.processes.size <= this.historyLimit) return;
+        if (this.processes.size <= this.historyLimit) {
+            return;
+        }
         for (const [id, item] of this.processes) {
-            if (this.processes.size <= this.historyLimit) break;
-            if (item.state !== 'running') this.processes.delete(id);
+            if (this.processes.size <= this.historyLimit) {
+                break;
+            }
+            if (item.state !== 'running') {
+                this.processes.delete(id);
+            }
         }
     }
 }
