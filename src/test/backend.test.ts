@@ -1,5 +1,9 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { ProcessManager, formatProcessError } from '../core/processManager';
+import { detectRos2Workspace, detectRosBuildEnvironment } from '../build/workspaceManager';
 
 suite('ROS 2 Assistant backend', () => {
     test('formats process errors consistently and prefers stderr', () => {
@@ -22,5 +26,81 @@ suite('ROS 2 Assistant backend', () => {
         assert.strictEqual(status.state, 'exited');
         assert.strictEqual(status.exitCode, 0);
         assert.ok(status.finishedAt);
+    });
+});
+
+
+
+suite('ROS 2 workspace detection', () => {
+    let temporaryRoot: string;
+
+    setup(() => {
+        temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ros2-assistant-workspace-'));
+    });
+
+    teardown(() => {
+        fs.rmSync(temporaryRoot, { recursive: true, force: true });
+    });
+
+    test('detects a workspace when a nested package folder is opened', () => {
+        const workspaceRoot = path.join(temporaryRoot, 'robot_ws');
+        const packageDirectory = path.join(workspaceRoot, 'src', 'bumperbot', 'bumperbot_description');
+        fs.mkdirSync(packageDirectory, { recursive: true });
+        fs.writeFileSync(path.join(packageDirectory, 'package.xml'), '<package/>');
+
+        const result = detectRos2Workspace(packageDirectory);
+
+        assert.strictEqual(result.status, 'detected');
+        assert.strictEqual(result.workspaceRoot, workspaceRoot);
+        assert.strictEqual(result.packageManifestCount, 1);
+        assert.strictEqual(result.indicators.src, true);
+    });
+
+    test('reports an empty src workspace skeleton as incomplete', () => {
+        const workspaceRoot = path.join(temporaryRoot, 'empty_ws');
+        fs.mkdirSync(path.join(workspaceRoot, 'src'), { recursive: true });
+
+        const result = detectRos2Workspace(workspaceRoot);
+
+        assert.strictEqual(result.status, 'incomplete');
+        assert.strictEqual(result.workspaceRoot, workspaceRoot);
+        assert.strictEqual(result.packageManifestCount, 0);
+    });
+
+    test('reports an ordinary src-only folder as incomplete rather than detected', () => {
+        const projectRoot = path.join(temporaryRoot, 'ordinary_project');
+        fs.mkdirSync(path.join(projectRoot, 'src'), { recursive: true });
+
+        const result = detectRos2Workspace(projectRoot);
+
+        assert.strictEqual(result.status, 'incomplete');
+        assert.strictEqual(result.workspaceRoot, projectRoot);
+    });
+
+    test('returns not-found when no src directory exists in the ancestor chain', () => {
+        const projectRoot = path.join(temporaryRoot, 'plain_folder');
+        fs.mkdirSync(projectRoot, { recursive: true });
+
+        const result = detectRos2Workspace(projectRoot);
+
+        assert.strictEqual(result.status, 'not-found');
+        assert.strictEqual(result.workspaceRoot, undefined);
+    });
+
+    test('detects installed ROS distributions and an executable colcon on PATH', () => {
+        const rosInstallRoot = path.join(temporaryRoot, 'ros');
+        const humbleDirectory = path.join(rosInstallRoot, 'humble');
+        const binDirectory = path.join(temporaryRoot, 'bin');
+        fs.mkdirSync(humbleDirectory, { recursive: true });
+        fs.mkdirSync(binDirectory, { recursive: true });
+        fs.writeFileSync(path.join(humbleDirectory, 'setup.bash'), '');
+        const colconExecutable = path.join(binDirectory, 'colcon');
+        fs.writeFileSync(colconExecutable, '#!/bin/sh\\nexit 0\\n');
+        fs.chmodSync(colconExecutable, 0o755);
+
+        const result = detectRosBuildEnvironment(rosInstallRoot, binDirectory);
+
+        assert.deepStrictEqual(result.installedRosDistros, ['humble']);
+        assert.strictEqual(result.colconPath, colconExecutable);
     });
 });

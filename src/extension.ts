@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { ChildProcess } from 'child_process';
 import { formatProcessError, processManager } from './core/processManager';
 import { rosEnvironment } from './core/rosEnvironment';
+import { detectRos2Workspace, detectRosBuildEnvironment } from './build/workspaceManager';
 import { existsSync, readdirSync } from 'fs';
 import * as path from 'path';
 
@@ -132,6 +133,68 @@ export function readInterfaceDefinition(
 
 export async function activate(context: vscode.ExtensionContext) {
     try {
+        // Register this before ROS distro validation so workspace diagnostics remain available
+        // even when ROS 2 is not installed or configured.
+        const workspaceDetectionOutput = vscode.window.createOutputChannel('ROS 2 Workspace');
+        context.subscriptions.push(workspaceDetectionOutput);
+
+        const detectWorkspaceDisposable = vscode.commands.registerCommand('ros2-assistant.detectWorkspace', async () => {
+            const folders = vscode.workspace.workspaceFolders;
+            if (!folders || folders.length === 0) {
+                vscode.window.showWarningMessage('Open a folder or ROS 2 workspace before running workspace detection.');
+                return;
+            }
+
+            let selectedFolder = folders[0];
+            if (folders.length > 1) {
+                const selection = await vscode.window.showQuickPick(
+                    folders.map(folder => ({
+                        label: folder.name,
+                        description: folder.uri.fsPath,
+                        folder
+                    })),
+                    { placeHolder: 'Select the folder to inspect for a ROS 2 workspace' }
+                );
+                if (!selection) {
+                    return;
+                }
+                selectedFolder = selection.folder;
+            }
+
+            const result = detectRos2Workspace(selectedFolder.uri.fsPath);
+            const buildEnvironment = detectRosBuildEnvironment();
+            workspaceDetectionOutput.clear();
+            workspaceDetectionOutput.appendLine('ROS 2 WORKSPACE DETECTION');
+            workspaceDetectionOutput.appendLine('=========================');
+            workspaceDetectionOutput.appendLine('Selected folder: ' + selectedFolder.uri.fsPath);
+            workspaceDetectionOutput.appendLine('Status: ' + result.status.toUpperCase());
+            if (result.workspaceRoot) {
+                workspaceDetectionOutput.appendLine('Workspace root: ' + result.workspaceRoot);
+                workspaceDetectionOutput.appendLine('Source directory: ' + result.sourceDirectory);
+            }
+            workspaceDetectionOutput.appendLine('Package manifests: ' + result.packageManifestCount);
+            workspaceDetectionOutput.appendLine('ROS 2 installations: ' + (buildEnvironment.installedRosDistros.join(', ') || 'none found under /opt/ros'));
+            workspaceDetectionOutput.appendLine('Active ROS_DISTRO: ' + (buildEnvironment.activeRosDistro || 'not set in VS Code environment'));
+            workspaceDetectionOutput.appendLine('colcon: ' + (buildEnvironment.colconPath || 'not found on PATH'));
+            workspaceDetectionOutput.appendLine('Workspace directories:');
+            workspaceDetectionOutput.appendLine('  src: ' + (result.indicators.src ? 'found' : 'not found'));
+            workspaceDetectionOutput.appendLine('  build: ' + (result.indicators.build ? 'found' : 'not found'));
+            workspaceDetectionOutput.appendLine('  install: ' + (result.indicators.install ? 'found' : 'not found'));
+            workspaceDetectionOutput.appendLine('  log: ' + (result.indicators.log ? 'found' : 'not found'));
+            workspaceDetectionOutput.appendLine('');
+            workspaceDetectionOutput.appendLine(result.message);
+            workspaceDetectionOutput.show(true);
+
+            if (result.status === 'detected' && buildEnvironment.installedRosDistros.length > 0 && buildEnvironment.colconPath) {
+                vscode.window.showInformationMessage(result.message + ' ROS 2 and colcon were found.');
+            } else if (result.status === 'detected') {
+                vscode.window.showWarningMessage(result.message + ' Check the ROS 2 installation and colcon availability in the output.');
+            } else {
+                vscode.window.showWarningMessage(result.message);
+            }
+        });
+        context.subscriptions.push(detectWorkspaceDisposable);
+
         const extensionName = String(context.extension.packageJSON.displayName || context.extension.packageJSON.name || 'ROS2 Assistant');
         const detected = findCompatibleRosDistro();
 
