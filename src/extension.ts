@@ -477,14 +477,32 @@ class PublishTopicPanel {
         this._panel.webview.postMessage(message);
     }
     private _fetchInterfaces() {
-        const script = `${ROS_SETUP} && exec ros2 interface list`;
+        // Discover ROS message definitions from the installed package prefixes.
+        // Some ROS 2 distributions do not provide the optional "ros2 interface" CLI verb.
+        const discoveryScript = [
+            "import os",
+            "from pathlib import Path",
+            "types = set()",
+            "for prefix in os.environ.get('AMENT_PREFIX_PATH', '').split(os.pathsep):",
+            "    share = Path(prefix) / 'share'",
+            "    if share.is_dir():",
+            "        for definition in share.glob('*/msg/*.msg'):",
+            "            types.add(f'{definition.parent.parent.name}/msg/{definition.stem}')",
+            "for interface_type in sorted(types):",
+            "    print(interface_type)"
+        ].join('\\n');
+        const encodedScript = Buffer.from(discoveryScript, 'utf8').toString('base64');
+        const script = `${ROS_SETUP} && exec python3 -c "$(printf %s "${encodedScript}" | base64 -d)"`;
         execFile('bash', ['-c', script], { env: process.env }, (error, stdout, stderr) => {
             if (error) {
-                this._post({ command: 'interfaces', types: [], error: (stderr || error.message).trim() });
+                this._post({ command: 'interfaces', types: [], error: (stderr || error.message).trim() || error.message });
                 return;
             }
-            const types = [...new Set(stdout.split(/\r?\n/).map(line => line.trim()).filter(line => /^[A-Za-z][A-Za-z0-9_]*\/msg\/[A-Za-z][A-Za-z0-9_]*$/.test(line)))].sort();
+            const types = [...new Set(stdout.split(/\\r?\\n/).map(line => line.trim()).filter(line => /^[A-Za-z][A-Za-z0-9_]*\\/msg\\/[A-Za-z][A-Za-z0-9_]*$/.test(line)))].sort();
             this._post({ command: 'interfaces', types });
+            if (types.length === 0) {
+                this._post({ command: 'interfaces', types: [], error: 'No ROS 2 message definitions were found in AMENT_PREFIX_PATH. Check that your ROS 2 setup and message packages are sourced.' });
+            }
         });
     }
 
@@ -687,6 +705,7 @@ class PublishTopicPanel {
     body { font-family: var(--vscode-font-family); padding: 20px; color: var(--vscode-foreground); background: var(--vscode-editor-background); }
     h2 { margin: 0 0 20px; padding-bottom: 10px; border-bottom: 1px solid var(--vscode-panel-border); }
     .row { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; flex-wrap: wrap; }
+    [hidden] { display: none !important; }
     label { font-weight: 600; min-width: 150px; }
     select, input, textarea { box-sizing: border-box; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, var(--vscode-widget-border)); border-radius: 3px; padding: 8px; font: inherit; }
     select { flex: 1; min-width: 220px; }
