@@ -148,6 +148,28 @@ suite('ROS 2 package discovery', () => {
         ]);
     });
 
+    test('parses dependencies with conditional XML attributes containing greater-than signs', () => {
+        const manifestPath = path.join(temporaryRoot, 'src', 'conditional_pkg', 'package.xml');
+        const manifest = `<?xml version="1.0"?>
+<package format="3">
+    <name>conditional_pkg</name>
+    <version>0.1.0</version>
+    <buildtool_depend>ament_cmake</buildtool_depend>
+    <exec_depend condition="$ROS_DISTRO >= iron">gz_ros2_control</exec_depend>
+    <exec_depend condition="$ROS_DISTRO == humble">ign_ros2_control</exec_depend>
+</package>`;
+
+        const result = parseRosPackageManifest(manifest, manifestPath, temporaryRoot);
+
+        assert.deepStrictEqual(
+            result.dependencies.filter(dependency => dependency.kind === 'exec_depend'),
+            [
+                { name: 'gz_ros2_control', kind: 'exec_depend' },
+                { name: 'ign_ros2_control', kind: 'exec_depend' }
+            ]
+        );
+    });
+
     test('recognizes an explicitly declared ament_python build type', () => {
         const manifestPath = path.join(temporaryRoot, 'src', 'python_pkg', 'package.xml');
         const manifest = '<package format="3"><name>python_pkg</name><version>0.1.0</version>' +
