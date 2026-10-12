@@ -309,6 +309,45 @@ export function discoverLaunchFiles(workspaceRoot: string): LaunchDiscoveryResul
     return { workspaceRoot: root, packagesScanned, launchFiles, issues, scanLimitReached };
 }
 
+/** Builds ROS CLI launch arguments. Empty declared fields are omitted so ROS uses their launch-file defaults. */
+export function buildLaunchCliArguments(
+    argumentsMap: Record<string, string>,
+    extraArguments: string[] = []
+): string[] {
+    const cliArguments: string[] = [];
+    const seen = new Set<string>();
+    for (const [name, value] of Object.entries(argumentsMap)) {
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || typeof value !== 'string' || value.includes('\0')) {
+            throw new Error('Launch arguments must have valid names and string values.');
+        }
+        if (value.length === 0) {
+            continue;
+        }
+        if (seen.has(name)) {
+            throw new Error('Duplicate launch argument: ' + name);
+        }
+        seen.add(name);
+        cliArguments.push(name + ':=' + value);
+    }
+    for (const rawArgument of extraArguments) {
+        const separator = rawArgument.indexOf(':=');
+        const name = separator > 0 ? rawArgument.slice(0, separator).trim() : '';
+        const value = separator > 0 ? rawArgument.slice(separator + 2) : '';
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || value.includes('\0')) {
+            throw new Error('Additional arguments must use name:=value syntax.');
+        }
+        if (value.length === 0) {
+            throw new Error('Additional launch argument "' + name + '" has an empty value. Remove it to use the launch file default.');
+        }
+        if (seen.has(name)) {
+            throw new Error('Launch argument was specified more than once: ' + name);
+        }
+        seen.add(name);
+        cliArguments.push(name + ':=' + value);
+    }
+    return cliArguments;
+}
+
 /** Tracks multiple ros2 launch processes and exposes output and lifecycle events. */
 export class LaunchManager extends EventEmitter {
     private readonly sessions = new Map<number, LaunchSessionSnapshot>();
@@ -354,31 +393,7 @@ export class LaunchManager extends EventEmitter {
             throw new Error('Invalid ROS package name.');
         }
 
-        const cliArguments: string[] = [];
-        const seen = new Set<string>();
-        for (const [name, value] of Object.entries(argumentsMap)) {
-            if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || typeof value !== 'string' || value.includes('\0')) {
-                throw new Error('Launch arguments must have valid names and string values.');
-            }
-            if (seen.has(name)) {
-                throw new Error('Duplicate launch argument: ' + name);
-            }
-            seen.add(name);
-            cliArguments.push(name + ':=' + value);
-        }
-        for (const rawArgument of extraArguments) {
-            const separator = rawArgument.indexOf(':=');
-            const name = separator > 0 ? rawArgument.slice(0, separator).trim() : '';
-            const value = separator > 0 ? rawArgument.slice(separator + 2) : '';
-            if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || value.includes('\0')) {
-                throw new Error('Additional arguments must use name:=value syntax.');
-            }
-            if (seen.has(name)) {
-                throw new Error('Launch argument was specified more than once: ' + name);
-            }
-            seen.add(name);
-            cliArguments.push(name + ':=' + value);
-        }
+        const cliArguments = buildLaunchCliArguments(argumentsMap, extraArguments);
 
         const id = this.nextId++;
         const snapshot: LaunchSessionSnapshot = {

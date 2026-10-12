@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { discoverLaunchFiles, parseLaunchArguments, parseRos2ShowArgs } from '../launch/launchManager';
+import { buildLaunchCliArguments, discoverLaunchFiles, parseLaunchArguments, parseRos2ShowArgs } from '../launch/launchManager';
 
 suite('ROS 2 launch discovery', () => {
     let temporaryRoot: string;
@@ -13,6 +13,19 @@ suite('ROS 2 launch discovery', () => {
 
     teardown(() => {
         fs.rmSync(temporaryRoot, { recursive: true, force: true });
+    });
+
+    test('omits empty declared argument values and rejects empty manual arguments', () => {
+        assert.deepStrictEqual(buildLaunchCliArguments({
+            use_slam: 'false',
+            gz_args: '',
+            robot_name: 'bumperbot'
+        }), ['use_slam:=false', 'robot_name:=bumperbot']);
+
+        assert.throws(
+            () => buildLaunchCliArguments({}, ['gz_args:=']),
+            /empty value/
+        );
     });
 
     test('parses statically declared Python launch arguments', () => {
