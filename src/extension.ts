@@ -1,10 +1,9 @@
 import * as vscode from 'vscode';
-import { exec, execFile, spawn, ChildProcess, ChildProcessWithoutNullStreams } from 'child_process';
+import { ChildProcess } from 'child_process';
+import { formatProcessError, processManager } from './core/processManager';
+import { rosEnvironment } from './core/rosEnvironment';
 import { existsSync, readdirSync } from 'fs';
 import * as path from 'path';
-
-/** Set during activation after the installed ROS 2 distro and domain ID are selected. */
-let ROS_SETUP = '';
 
 // ROS 2 release order. Rolling is also accepted because it tracks the newest ROS 2 development branch.
 const ROS_DISTRO_ORDER: Record<string, number> = {
@@ -45,15 +44,6 @@ function findCompatibleRosDistro(): { distro?: string; installed: string[] } {
         : compatible[0];
 
     return { distro, installed };
-}
-
-function configureRosEnvironment(distro: string, domainId: number): void {
-    // Respect an explicitly configured RMW; otherwise retain the extension's previous Cyclone DDS default.
-    const inheritedRmw = process.env.RMW_IMPLEMENTATION;
-    const rmwImplementation = inheritedRmw && /^rmw_[A-Za-z0-9_]+$/.test(inheritedRmw)
-        ? inheritedRmw
-        : 'rmw_cyclonedds_cpp';
-    ROS_SETUP = `source /opt/ros/${distro}/setup.bash && export ROS_DOMAIN_ID=${domainId} && export RMW_IMPLEMENTATION=${rmwImplementation}`;
 }
 
 function escapeHtml(text: string): string {
@@ -125,7 +115,7 @@ export function formatGoalOutput(raw: string): string {
 export function readInterfaceDefinition(
     interfaceType: string,
     callback: (error: Error | null, text: string, stderr: string) => void,
-    setup: string = ROS_SETUP
+    setup: string = rosEnvironment.setupCommand
 ) {
     const script = [
         setup,
@@ -135,7 +125,7 @@ export function readInterfaceDefinition(
         'echo "definition file for $IFACE_TYPE not found in AMENT_PREFIX_PATH" >&2; exit 1'
     ].join(' && ').replace('done && echo', 'done; echo');
 
-    execFile('bash', ['-c', script], { env: { ...process.env, IFACE_TYPE: interfaceType } }, (error, stdout, stderr) => {
+    processManager.execFile('bash', ['-c', script], { env: { ...process.env, IFACE_TYPE: interfaceType } }, (error, stdout, stderr) => {
         callback(error, stdout, stderr);
     });
 }
@@ -183,7 +173,7 @@ export async function activate(context: vscode.ExtensionContext) {
             await context.globalState.update('ros2-assistant.domainId', domainId);
         }
 
-        configureRosEnvironment(detected.distro, domainId!);
+        rosEnvironment.configure(detected.distro, domainId!);
         console.log(`ROS2 Assistant using ROS 2 ${detected.distro}, ROS_DOMAIN_ID=${domainId}`);
 
         const helloDisposable = vscode.commands.registerCommand('ros2-assistant.helloWorld', () => {
@@ -400,9 +390,9 @@ class Ros2TreeDataProvider implements vscode.TreeDataProvider<Ros2TreeItem>, vsc
             cmd = 'ros2 action list';
         }
 
-        const fullCmd = `bash -c "${ROS_SETUP} && ${cmd}"`;
+        const fullCmd = `bash -c "${rosEnvironment.setupCommand} && ${cmd}"`;
 
-        exec(fullCmd, { env: process.env }, (error, stdout) => {
+        processManager.exec(fullCmd, { env: process.env }, (error, stdout) => {
             let items: string[] = [];
             if (!error && stdout) {
                 items = stdout.split('\n').map(s => s.trim()).filter(s => s.length > 0);
@@ -492,8 +482,8 @@ class PublishTopicPanel {
             "    print(interface_type)"
         ].join('\n');
         const encodedScript = Buffer.from(discoveryScript, 'utf8').toString('base64');
-        const script = `${ROS_SETUP} && exec python3 -c "$(printf %s "${encodedScript}" | base64 -d)"`;
-        execFile('bash', ['-c', script], { env: process.env }, (error, stdout, stderr) => {
+        const script = `${rosEnvironment.setupCommand} && exec python3 -c "$(printf %s "${encodedScript}" | base64 -d)"`;
+        processManager.execFile('bash', ['-c', script], { env: process.env }, (error, stdout, stderr) => {
             if (error) {
                 this._post({ command: 'interfaces', types: [], error: (stderr || error.message).trim() || error.message });
                 return;
@@ -546,8 +536,8 @@ class PublishTopicPanel {
     }
 
     private _fetchTopics() {
-        const script = `${ROS_SETUP} && exec ros2 topic list`;
-        execFile('bash', ['-c', script], { env: process.env }, (error, stdout, stderr) => {
+        const script = `${rosEnvironment.setupCommand} && exec ros2 topic list`;
+        processManager.execFile('bash', ['-c', script], { env: process.env }, (error, stdout, stderr) => {
             if (error) {
                 this._post({ command: 'topics', topics: [], error: (stderr || error.message).trim() });
                 return;
@@ -574,8 +564,8 @@ class PublishTopicPanel {
         }
 
         const env = { ...process.env, ROS_TOPIC_NAME: topic };
-        const script = `${ROS_SETUP} && exec ros2 topic type "$ROS_TOPIC_NAME"`;
-        execFile('bash', ['-c', script], { env }, (error, stdout, stderr) => {
+        const script = `${rosEnvironment.setupCommand} && exec ros2 topic type "$ROS_TOPIC_NAME"`;
+        processManager.execFile('bash', ['-c', script], { env }, (error, stdout, stderr) => {
             if (requestVersion !== this.selectionVersion) {
                 return;
             }
@@ -662,8 +652,8 @@ class PublishTopicPanel {
             ROS_MESSAGE_YAML: yaml,
             ROS_PUBLISHER_SCRIPT_B64: Buffer.from(publisherScript, 'utf8').toString('base64')
         };
-        const script = `${ROS_SETUP} && exec python3 -c "$(printf %s "$ROS_PUBLISHER_SCRIPT_B64" | base64 -d)"`;
-        const child = spawn('bash', ['-c', script], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+        const script = `${rosEnvironment.setupCommand} && exec python3 -c "$(printf %s "$ROS_PUBLISHER_SCRIPT_B64" | base64 -d)"`;
+        const child = processManager.spawn('bash', ['-c', script], { env, stdio: ['ignore', 'pipe', 'pipe'] });
         this.publisherProcess = child;
         this._post({ command: 'publishStatus', running: true, text: `Publishing ${count} message(s) to ${topic} at ${rate} Hz...` });
 
@@ -693,11 +683,11 @@ class PublishTopicPanel {
         if (!child) {
             return;
         }
-        child.kill('SIGINT');
+        processManager.terminate(child, 'SIGINT');
         this._post({ command: 'publishStatus', running: true, text: 'Stopping publisher...' });
         setTimeout(() => {
             if (this.publisherProcess === child) {
-                child.kill('SIGKILL');
+                processManager.terminate(child, 'SIGKILL', 0);
             }
         }, 2000);
     }
@@ -909,7 +899,7 @@ class PublishTopicPanel {
             PublishTopicPanel.currentPanel = undefined;
         }
         if (this.publisherProcess) {
-            this.publisherProcess.kill('SIGINT');
+            processManager.terminate(this.publisherProcess, 'SIGINT');
             this.publisherProcess = undefined;
         }
         while (this._disposables.length) {
@@ -925,7 +915,7 @@ class TopicEchoPanel {
     public static currentPanels: Map<string, TopicEchoPanel> = new Map();
     private readonly _panel: vscode.WebviewPanel;
     private _disposables: vscode.Disposable[] = [];
-    private _process: ChildProcessWithoutNullStreams | undefined;
+    private _process: ChildProcess | undefined;
 
     public static createOrShow(extensionUri: vscode.Uri, topicName: string) {
         const column = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : undefined;
@@ -957,15 +947,15 @@ class TopicEchoPanel {
     }
 
     private _startEchoProcess() {
-        const echoCmd = `${ROS_SETUP} && ros2 topic echo ${this.topicName}`;
-        this._process = spawn('bash', ['-c', echoCmd], { env: process.env });
+        const echoCmd = `${rosEnvironment.setupCommand} && ros2 topic echo ${this.topicName}`;
+        this._process = processManager.spawn('bash', ['-c', echoCmd], { env: process.env });
 
-        this._process.stdout.on('data', (data) => {
+        this._process.stdout?.on('data', (data) => {
             const message = data.toString();
             this._panel.webview.postMessage({ command: 'echoData', data: message });
         });
 
-        this._process.stderr.on('data', (data) => {
+        this._process.stderr?.on('data', (data) => {
             this._panel.webview.postMessage({ command: 'echoError', data: data.toString() });
         });
     }
@@ -1041,7 +1031,7 @@ class TopicEchoPanel {
         TopicEchoPanel.currentPanels.delete(this.topicName);
 
         if (this._process) {
-            this._process.kill();
+            processManager.terminate(this._process, 'SIGTERM');
         }
 
         this._panel.dispose();
@@ -1093,14 +1083,14 @@ class NodeInfoPanel {
     }
 
     private _fetchNodeInfo() {
-        const innerCmd = `${ROS_SETUP} && ros2 node info ${this.nodeName}`;
+        const innerCmd = `${rosEnvironment.setupCommand} && ros2 node info ${this.nodeName}`;
         const cmd = `bash -c "${innerCmd}"`;
 
-        exec(cmd, { env: process.env }, (error, stdout, stderr) => {
+        processManager.exec(cmd, { env: process.env }, (error, stdout, stderr) => {
             if (error) {
                 this._panel.webview.postMessage({
                     command: 'nodeInfoData',
-                    data: `Error executing command:\n${stderr || error.message}`
+                    data: formatProcessError('ros2 node info', error, stderr, stdout)
                 });
                 return;
             }
@@ -1311,9 +1301,9 @@ class ServiceCallPanel {
     }
 
     private _fetchServiceType() {
-        const cmd = `bash -c "${ROS_SETUP} && ros2 service type ${this.serviceName}"`;
+        const cmd = `bash -c "${rosEnvironment.setupCommand} && ros2 service type ${this.serviceName}"`;
 
-        exec(cmd, { env: process.env }, (error, stdout, stderr) => {
+        processManager.exec(cmd, { env: process.env }, (error, stdout, stderr) => {
             if (error || stderr) {
                 this.serviceType = 'Unknown';
                 this.typeMessage = {
@@ -1370,7 +1360,7 @@ class ServiceCallPanel {
             SVC_TYPE: this.serviceType,
             SVC_ARGS: flattenedArgs
         };
-        const script = `${ROS_SETUP} && exec ros2 service call "$SVC_NAME" "$SVC_TYPE" "$SVC_ARGS"`;
+        const script = `${rosEnvironment.setupCommand} && exec ros2 service call "$SVC_NAME" "$SVC_TYPE" "$SVC_ARGS"`;
         const show = (text: string) => this._panel.webview.postMessage({ command: 'serviceResponse', data: text });
 
         this._panel.webview.postMessage({ command: 'serviceState', running: true });
@@ -1379,7 +1369,7 @@ class ServiceCallPanel {
         let stdout = '';
         let stderr = '';
         let finished = false;
-        const child = spawn('bash', ['-c', script], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+        const child = processManager.spawn('bash', ['-c', script], { env, stdio: ['ignore', 'pipe', 'pipe'] });
         this.serviceProcess = child;
 
         const finish = (message: string) => {
@@ -1394,7 +1384,7 @@ class ServiceCallPanel {
         };
 
         const timeout = setTimeout(() => {
-            child.kill('SIGTERM');
+            processManager.terminate(child, 'SIGTERM', 0);
             finish('No response after 30s. Is the service server running on the selected ROS domain?');
         }, 30000);
 
@@ -1580,7 +1570,7 @@ class ServiceCallPanel {
     public dispose() {
         ServiceCallPanel.currentPanels.delete(this.serviceName);
         if (this.serviceProcess) {
-            this.serviceProcess.kill('SIGTERM');
+            processManager.terminate(this.serviceProcess, 'SIGTERM');
             this.serviceProcess = undefined;
         }
         this._panel.dispose();
@@ -1673,9 +1663,9 @@ class ActionGoalPanel {
     }
 
     private _fetchActionType() {
-        const cmd = `bash -c "${ROS_SETUP} && ros2 action list -t"`;
+        const cmd = `bash -c "${rosEnvironment.setupCommand} && ros2 action list -t"`;
 
-        exec(cmd, { env: process.env }, (error, stdout, stderr) => {
+        processManager.exec(cmd, { env: process.env }, (error, stdout, stderr) => {
             const type = error ? undefined : parseActionType(stdout, this.actionName);
             if (!type) {
                 this.actionType = 'Unknown';
@@ -1729,7 +1719,7 @@ class ActionGoalPanel {
             ACT_GOAL: flattenedArgs
         };
         // exec replaces the shell, so signals reach the ros2 process directly.
-        const script = `${ROS_SETUP} && exec ros2 action send_goal --feedback "$ACT_NAME" "$ACT_TYPE" "$ACT_GOAL"`;
+        const script = `${rosEnvironment.setupCommand} && exec ros2 action send_goal --feedback "$ACT_NAME" "$ACT_TYPE" "$ACT_GOAL"`;
 
         this.cancelled = false;
         this._post({ command: 'goalOutput', data: `Sending goal to ${this.actionName} (${this.actionType})...` });
@@ -1737,7 +1727,7 @@ class ActionGoalPanel {
 
         let stdout = '';
         let stderr = '';
-        const child = spawn('bash', ['-c', script], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+        const child = processManager.spawn('bash', ['-c', script], { env, stdio: ['ignore', 'pipe', 'pipe'] });
         this.goalProcess = child;
 
         child.stdout?.on('data', (chunk: Buffer) => {
@@ -1771,12 +1761,7 @@ class ActionGoalPanel {
             return;
         }
         this.cancelled = true;
-        child.kill('SIGINT'); // same as Ctrl+C in a terminal
-        setTimeout(() => {
-            if (this.goalProcess === child) {
-                child.kill('SIGKILL');
-            }
-        }, 3000);
+        processManager.terminate(child, 'SIGINT'); // same as Ctrl+C in a terminal
     }
 
     private _getHtmlForWebview(actionName: string): string {
@@ -1956,7 +1941,7 @@ class ActionGoalPanel {
         ActionGoalPanel.currentPanels.delete(this.actionName);
         if (this.goalProcess) {
             this.cancelled = true;
-            this.goalProcess.kill('SIGINT');
+            processManager.terminate(this.goalProcess, 'SIGINT');
         }
         this._panel.dispose();
 
