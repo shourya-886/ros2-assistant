@@ -5,7 +5,9 @@ import { existsSync } from 'fs';
 export class RosEnvironmentManager {
     private configuredSetup = '';
     get setupCommand(): string {
-        if (!this.configuredSetup) throw new Error('ROS environment has not been configured.');
+        if (!this.configuredSetup) {
+            throw new Error('ROS environment has not been configured.');
+        }
         return this.configuredSetup;
     }
     get isConfigured(): boolean { return this.configuredSetup.length > 0; }
@@ -27,7 +29,9 @@ export class RosEnvironmentManager {
         ].join(' && ');
     }
     withEnvironment(command: string): string {
-        if (!command.trim()) throw new Error('ROS command cannot be empty.');
+        if (!command.trim()) {
+            throw new Error('ROS command cannot be empty.');
+        }
         return `${this.setupCommand} && ${command}`;
     }
 }
