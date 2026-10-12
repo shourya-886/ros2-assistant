@@ -429,12 +429,31 @@ export async function activate(context: vscode.ExtensionContext) {
                 packages = selectedPackages.map(pkg => pkg.packageName);
             }
 
+            const symlinkChoice = await vscode.window.showQuickPick(
+                [
+                    {
+                        label: 'Enable symlink install',
+                        description: 'Use colcon build --symlink-install (recommended for development)',
+                        value: true
+                    },
+                    {
+                        label: 'Disable symlink install',
+                        description: 'Use the standard install behavior',
+                        value: false
+                    }
+                ],
+                { placeHolder: 'Use symlink install for this build?' }
+            );
+            if (!symlinkChoice) {
+                return;
+            }
+
             buildOutput.clear();
             try {
                 buildManager.startBuild({
                     workspaceRoot: workspace.workspaceRoot,
                     packages,
-                    symlinkInstall: true
+                    symlinkInstall: symlinkChoice.value
                 });
             } catch (error) {
                 vscode.window.showErrorMessage(
