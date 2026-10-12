@@ -7,7 +7,6 @@ const ROS_SETUP =
     'export ROS_DOMAIN_ID=3 && export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp && source /opt/ros/humble/setup.bash';
 
 export function activate(context: vscode.ExtensionContext) {
-    console.log('ROS2 Assistant extension activation started.');
 
     try {
         const helloDisposable = vscode.commands.registerCommand('ros2-assistant.helloWorld', () => {
@@ -56,7 +55,6 @@ export function activate(context: vscode.ExtensionContext) {
         });
         context.subscriptions.push(inspectServiceDisposable);
 
-        console.log('ROS2 Assistant successfully activated!');
     } catch (error) {
         console.error('Error during ROS2 Assistant activation:', error);
     }
@@ -691,35 +689,38 @@ class ServiceCallPanel {
         };
         const script = `${ROS_SETUP} && ros2 service call "$SVC_NAME" "$SVC_TYPE" "$SVC_ARGS"`;
 
-        let output = '';
         const show = (text: string) => {
             this._panel.webview.postMessage({ command: 'serviceResponse', data: text });
         };
-        show(`Calling service: ${this.serviceName} (${this.serviceType})\nPayload: "${flattenedArgs}"\nWaiting for response...`);
+        show(`Calling ${this.serviceName} (${this.serviceType})...`);
 
+        let stdout = '';
+        let stderr = '';
         const child = spawn('bash', ['-c', script], { env, stdio: ['ignore', 'pipe', 'pipe'] });
         const timeout = setTimeout(() => {
-            output += '\n[timeout] No response after 30s, killing ros2 process.';
-            show(output);
             child.kill();
+            show('No response after 30s. Is the service server running (same domain and RMW)?');
         }, 30000);
 
-        const onData = (chunk: Buffer) => {
-            output += chunk.toString();
-            show(output);
-        };
-        child.stdout?.on('data', onData);
-        child.stderr?.on('data', onData);
+        child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+        child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
         child.on('error', (err) => {
             clearTimeout(timeout);
-            show(`${output}\nFailed to start: ${err.message}`);
+            show(`Failed to start: ${err.message}`);
         });
         child.on('close', (code) => {
             clearTimeout(timeout);
             if (code !== 0) {
-                output += `\n[exit code ${code}]`;
+                show(`Error executing service call:\n${(stderr || stdout).trim()}`);
+                return;
             }
-            show(output.trim() || 'Service called successfully.');
+            // Show only the fields, e.g. "sum=3" instead of "example_interfaces.srv.AddTwoInts_Response(sum=3)".
+            const idx = stdout.indexOf('response:');
+            const result = (idx >= 0 ? stdout.slice(idx + 'response:'.length) : stdout).trim();
+            const open = result.indexOf('(');
+            const close = result.lastIndexOf(')');
+            const fields = open >= 0 && close > open ? result.slice(open + 1, close) : result;
+            show(fields || 'Service called successfully.');
         });
     }
 
