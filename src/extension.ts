@@ -429,6 +429,7 @@ class PublishTopicPanel {
     private messageType = '';
     private publisherProcess: ChildProcess | undefined;
     private selectionVersion = 0;
+    private newTopicMode = false;
 
     public static createOrShow(extensionUri: vscode.Uri) {
         const column = vscode.window.activeTextEditor?.viewColumn;
@@ -453,10 +454,16 @@ class PublishTopicPanel {
         this._panel.webview.onDidReceiveMessage(message => {
             if (message.command === 'ready' || message.command === 'refreshTopics') {
                 this._fetchTopics();
+            } else if (message.command === 'refreshInterfaces') {
+                this._fetchInterfaces();
+            } else if (message.command === 'setTopicMode') {
+                this._setTopicMode(Boolean(message.newTopic));
+            } else if (message.command === 'selectMessageType') {
+                this._selectMessageType(String(message.type || ''));
             } else if (message.command === 'selectTopic') {
                 this._selectTopic(String(message.topic || ''));
             } else if (message.command === 'startPublishing') {
-                this._startPublishing(message.rate, message.count, String(message.yaml || ''));
+                this._startPublishing(message.rate, message.count, String(message.topic || ''), String(message.type || ''), Boolean(message.newTopic), String(message.yaml || ''));
             } else if (message.command === 'stopPublishing') {
                 this._stopPublishing();
             }
@@ -465,6 +472,38 @@ class PublishTopicPanel {
 
     private _post(message: object) {
         this._panel.webview.postMessage(message);
+    }
+    private _fetchInterfaces() {
+        const script = `${ROS_SETUP} && exec ros2 interface list`;
+        execFile('bash', ['-c', script], { env: process.env }, (error, stdout, stderr) => {
+            if (error) { this._post({ command: 'interfaces', types: [], error: (stderr || error.message).trim() }); return; }
+            const types = [...new Set(stdout.split(/\r?\n/).map(line => line.trim()).filter(line => /^[A-Za-z][A-Za-z0-9_]*\/msg\/[A-Za-z][A-Za-z0-9_]*$/.test(line)))].sort();
+            this._post({ command: 'interfaces', types });
+        });
+    }
+
+    private _setTopicMode(newTopic: boolean) {
+        this.newTopicMode = newTopic; this.selectedTopic = ''; this.messageType = ''; ++this.selectionVersion;
+        this._post({ command: 'clearSelection' });
+        this._post({ command: 'modeChanged', newTopic });
+        if (!newTopic) this._fetchTopics();
+    }
+
+    private _selectMessageType(type: string) {
+        if (!this.newTopicMode) return;
+        this.messageType = ''; const version = ++this.selectionVersion;
+        this._post({ command: 'topicType', topic: '', type: '', template: '', loading: Boolean(type) });
+        if (!/^[A-Za-z][A-Za-z0-9_]*\/msg\/[A-Za-z][A-Za-z0-9_]*$/.test(type)) return;
+        this._loadMessageDefinition(type, version, '');
+    }
+
+    private _loadMessageDefinition(type: string, version: number, topic: string) {
+        readInterfaceDefinition(type, (error, definition, stderr) => {
+            if (version !== this.selectionVersion) return;
+            if (error || !definition.trim()) { this._post({ command: 'topicType', topic, type, template: '{}', loading: false, error: (stderr || error?.message || 'Could not load message definition.').trim() }); return; }
+            this.messageType = type;
+            this._post({ command: 'topicType', topic, type, template: buildGoalTemplate(definition), loading: false });
+        });
     }
 
     private _fetchTopics() {
@@ -476,7 +515,7 @@ class PublishTopicPanel {
             }
             const topics = stdout.split(/\r?\n/).map(topic => topic.trim()).filter(Boolean);
             this._post({ command: 'topics', topics });
-            if (this.selectedTopic && topics.includes(this.selectedTopic)) {
+            if (!this.newTopicMode && this.selectedTopic && topics.includes(this.selectedTopic)) {
                 this._post({ command: 'selectTopic', topic: this.selectedTopic });
                 this._selectTopic(this.selectedTopic);
             }
@@ -484,6 +523,7 @@ class PublishTopicPanel {
     }
 
     private _selectTopic(topic: string) {
+        if (this.newTopicMode) return;
         this.selectedTopic = topic;
         this.messageType = '';
         const requestVersion = ++this.selectionVersion;
@@ -505,30 +545,25 @@ class PublishTopicPanel {
             }
 
             const type = stdout.trim().split(/\r?\n/)[0].trim();
-            this.messageType = type;
-            readInterfaceDefinition(type, (definitionError, definition, definitionStderr) => {
-                if (requestVersion !== this.selectionVersion) {
-                    return;
-                }
-                if (definitionError || !definition.trim()) {
-                    this._post({ command: 'topicType', topic, type, template: '{}', loading: false,
-                        error: (definitionStderr || definitionError?.message || 'Could not load message definition.').trim() });
-                    return;
-                }
-                this._post({ command: 'topicType', topic, type, template: buildGoalTemplate(definition), loading: false });
-            });
+            this._loadMessageDefinition(type, requestVersion, topic);
         });
     }
 
-    private _startPublishing(rateValue: unknown, countValue: unknown, yaml: string) {
+    private _startPublishing(rateValue: unknown, countValue: unknown, topicValue: string, typeValue: string, newTopic: boolean, yaml: string) {
         if (this.publisherProcess) {
             return;
         }
         const rate = Number(rateValue);
         const count = Number(countValue);
-        if (!this.selectedTopic || !this.messageType) {
-            this._post({ command: 'publishStatus', running: false, text: 'Select a valid topic first.' });
+        const topic = newTopic ? topicValue.trim() : this.selectedTopic;
+        const type = newTopic ? typeValue.trim() : this.messageType;
+        if (newTopic !== this.newTopicMode) { this._post({ command: 'publishStatus', running: false, text: 'Topic mode changed. Select the topic and message type again.' }); return; }
+        if (!topic || !type) {
+            this._post({ command: 'publishStatus', running: false, text: 'Select a valid topic and message type first.' });
             return;
+        }
+        if (newTopic && (!topic.startsWith('/') || !/^\/[A-Za-z][A-Za-z0-9_]*(\/[A-Za-z][A-Za-z0-9_]*)*$/.test(topic))) {
+            this._post({ command: 'publishStatus', running: false, text: 'New topic names must start with / and contain valid ROS name tokens.' }); return;
         }
         if (!Number.isFinite(rate) || rate <= 0) {
             this._post({ command: 'publishStatus', running: false, text: 'Publish rate must be greater than 0 Hz.' });
@@ -543,18 +578,41 @@ class PublishTopicPanel {
             return;
         }
 
+        const publisherScript = [
+            "import os, time, yaml, rclpy",
+            "from rosidl_runtime_py.utilities import get_message",
+            "from rosidl_runtime_py.set_message import set_message_fields",
+            "topic=os.environ['ROS_TOPIC_NAME']; type_name=os.environ['ROS_MESSAGE_TYPE']",
+            "rate=float(os.environ['ROS_PUBLISH_RATE']); count=int(os.environ['ROS_PUBLISH_COUNT'])",
+            "payload=yaml.safe_load(os.environ['ROS_MESSAGE_YAML'])",
+            "if payload is None: payload={}",
+            "if not isinstance(payload, dict): raise ValueError('Message YAML must be a mapping/object.')",
+            "rclpy.init(); node=rclpy.create_node('ros2_assistant_gui_publisher')",
+            "try:",
+            "    msg_type=get_message(type_name); pub=node.create_publisher(msg_type, topic, 10)",
+            "    for i in range(count):",
+            "        msg=msg_type(); set_message_fields(msg, payload)",
+            "        if hasattr(msg, 'header') and hasattr(msg.header, 'stamp'): msg.header.stamp=node.get_clock().now().to_msg()",
+            "        pub.publish(msg); node.get_logger().info('Published %d/%d to %s' % (i+1,count,topic))",
+            "        rclpy.spin_once(node, timeout_sec=0.0)",
+            "        if i+1<count: time.sleep(1.0/rate)",
+            "finally:",
+            "    node.destroy_node(); rclpy.shutdown()"
+        ].join('\n');
         const env = {
             ...process.env,
-            ROS_TOPIC_NAME: this.selectedTopic,
-            ROS_MESSAGE_TYPE: this.messageType,
+            PYTHONUNBUFFERED: '1',
+            ROS_TOPIC_NAME: topic,
+            ROS_MESSAGE_TYPE: type,
             ROS_PUBLISH_RATE: String(rate),
             ROS_PUBLISH_COUNT: String(count),
-            ROS_MESSAGE_YAML: yaml
+            ROS_MESSAGE_YAML: yaml,
+            ROS_PUBLISHER_SCRIPT_B64: Buffer.from(publisherScript, 'utf8').toString('base64')
         };
-        const script = `${ROS_SETUP} && exec ros2 topic pub --rate "$ROS_PUBLISH_RATE" --times "$ROS_PUBLISH_COUNT" "$ROS_TOPIC_NAME" "$ROS_MESSAGE_TYPE" "$ROS_MESSAGE_YAML"`;
+        const script = `${ROS_SETUP} && exec python3 -c "$(printf %s "$ROS_PUBLISHER_SCRIPT_B64" | base64 -d)"`;
         const child = spawn('bash', ['-c', script], { env, stdio: ['ignore', 'pipe', 'pipe'] });
         this.publisherProcess = child;
-        this._post({ command: 'publishStatus', running: true, text: `Publishing ${count} message(s) to ${this.selectedTopic} at ${rate} Hz...` });
+        this._post({ command: 'publishStatus', running: true, text: `Publishing ${count} message(s) to ${topic} at ${rate} Hz...` });
 
         child.stdout?.on('data', chunk => {
             this._post({ command: 'publishOutput', text: chunk.toString() });
