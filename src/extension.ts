@@ -454,7 +454,9 @@ class PublishTopicPanel {
         this._panel.webview.onDidReceiveMessage(message => {
             if (message.command === 'ready' || message.command === 'refreshTopics') {
                 this._fetchTopics();
-                if (message.command === 'ready') this._fetchInterfaces();
+                if (message.command === 'ready') {
+                    this._fetchInterfaces();
+                }
             } else if (message.command === 'refreshInterfaces') {
                 this._fetchInterfaces();
             } else if (message.command === 'setTopicMode') {
@@ -477,31 +479,49 @@ class PublishTopicPanel {
     private _fetchInterfaces() {
         const script = `${ROS_SETUP} && exec ros2 interface list`;
         execFile('bash', ['-c', script], { env: process.env }, (error, stdout, stderr) => {
-            if (error) { this._post({ command: 'interfaces', types: [], error: (stderr || error.message).trim() }); return; }
+            if (error) {
+                this._post({ command: 'interfaces', types: [], error: (stderr || error.message).trim() });
+                return;
+            }
             const types = [...new Set(stdout.split(/\r?\n/).map(line => line.trim()).filter(line => /^[A-Za-z][A-Za-z0-9_]*\/msg\/[A-Za-z][A-Za-z0-9_]*$/.test(line)))].sort();
             this._post({ command: 'interfaces', types });
         });
     }
 
     private _setTopicMode(newTopic: boolean) {
-        this.newTopicMode = newTopic; this.selectedTopic = ''; this.messageType = ''; ++this.selectionVersion;
+        this.newTopicMode = newTopic;
+        this.selectedTopic = '';
+        this.messageType = '';
+        ++this.selectionVersion;
         this._post({ command: 'clearSelection' });
         this._post({ command: 'modeChanged', newTopic });
-        if (!newTopic) this._fetchTopics();
+        if (!newTopic) {
+            this._fetchTopics();
+        }
     }
 
     private _selectMessageType(type: string) {
-        if (!this.newTopicMode) return;
-        this.messageType = ''; const version = ++this.selectionVersion;
+        if (!this.newTopicMode) {
+            return;
+        }
+        this.messageType = '';
+        const version = ++this.selectionVersion;
         this._post({ command: 'topicType', topic: '', type: '', template: '', loading: Boolean(type) });
-        if (!/^[A-Za-z][A-Za-z0-9_]*\/msg\/[A-Za-z][A-Za-z0-9_]*$/.test(type)) return;
+        if (!/^[A-Za-z][A-Za-z0-9_]*\/msg\/[A-Za-z][A-Za-z0-9_]*$/.test(type)) {
+            return;
+        }
         this._loadMessageDefinition(type, version, '');
     }
 
     private _loadMessageDefinition(type: string, version: number, topic: string) {
         readInterfaceDefinition(type, (error, definition, stderr) => {
-            if (version !== this.selectionVersion) return;
-            if (error || !definition.trim()) { this._post({ command: 'topicType', topic, type, template: '{}', loading: false, error: (stderr || error?.message || 'Could not load message definition.').trim() }); return; }
+            if (version !== this.selectionVersion) {
+                return;
+            }
+            if (error || !definition.trim()) {
+                this._post({ command: 'topicType', topic, type, template: '{}', loading: false, error: (stderr || error?.message || 'Could not load message definition.').trim() });
+                return;
+            }
             this.messageType = type;
             this._post({ command: 'topicType', topic, type, template: buildGoalTemplate(definition), loading: false });
         });
@@ -524,7 +544,9 @@ class PublishTopicPanel {
     }
 
     private _selectTopic(topic: string) {
-        if (this.newTopicMode) return;
+        if (this.newTopicMode) {
+            return;
+        }
         this.selectedTopic = topic;
         this.messageType = '';
         const requestVersion = ++this.selectionVersion;
@@ -558,13 +580,17 @@ class PublishTopicPanel {
         const count = Number(countValue);
         const topic = newTopic ? topicValue.trim() : this.selectedTopic;
         const type = newTopic ? typeValue.trim() : this.messageType;
-        if (newTopic !== this.newTopicMode) { this._post({ command: 'publishStatus', running: false, text: 'Topic mode changed. Select the topic and message type again.' }); return; }
+        if (newTopic !== this.newTopicMode) {
+            this._post({ command: 'publishStatus', running: false, text: 'Topic mode changed. Select the topic and message type again.' });
+            return;
+        }
         if (!topic || !type) {
             this._post({ command: 'publishStatus', running: false, text: 'Select a valid topic and message type first.' });
             return;
         }
         if (newTopic && (!topic.startsWith('/') || !/^\/[A-Za-z][A-Za-z0-9_]*(\/[A-Za-z][A-Za-z0-9_]*)*$/.test(topic))) {
-            this._post({ command: 'publishStatus', running: false, text: 'New topic names must start with / and contain valid ROS name tokens.' }); return;
+            this._post({ command: 'publishStatus', running: false, text: 'New topic names must start with / and contain valid ROS name tokens.' });
+            return;
         }
         if (!Number.isFinite(rate) || rate <= 0) {
             this._post({ command: 'publishStatus', running: false, text: 'Publish rate must be greater than 0 Hz.' });
