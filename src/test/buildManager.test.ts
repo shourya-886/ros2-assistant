@@ -2,7 +2,8 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { BuildManager, BuildSnapshot } from '../build/buildManager';
+import { BuildManager } from '../build/buildManager';
+import type { BuildSnapshot } from '../build/buildManager';
 import { ProcessManager } from '../core/processManager';
 
 suite('ROS 2 build execution', () => {
