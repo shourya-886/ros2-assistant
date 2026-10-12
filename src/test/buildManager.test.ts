@@ -61,6 +61,19 @@ suite('ROS 2 build execution', () => {
         manager.dispose();
     });
 
+    test('omits symlink-install when disabled', async () => {
+        createColcon();
+        const manager = createManager();
+        const finalStatus = new Promise<BuildSnapshot>(resolve => manager.once('status', resolve));
+
+        const started = manager.startBuild({ workspaceRoot, symlinkInstall: false });
+        assert.strictEqual(started.command, 'colcon build');
+
+        const result = await finalStatus;
+        assert.strictEqual(result.status, 'succeeded');
+        manager.dispose();
+    });
+
     test('rejects invalid package filters before starting a process', () => {
         createColcon();
         const manager = createManager();
