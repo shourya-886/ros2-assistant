@@ -1,10 +1,72 @@
 import * as vscode from 'vscode';
-import { exec, spawn, ChildProcessWithoutNullStreams } from 'child_process';
+import { exec, spawn, ChildProcess, ChildProcessWithoutNullStreams } from 'child_process';
 
 // Must match the shell where your ROS 2 nodes run (domain and RMW from ~/.bashrc).
 // Mixing RMW implementations (e.g. Fast DDS client with a CycloneDDS server) breaks service calls.
 const ROS_SETUP =
     'export ROS_DOMAIN_ID=3 && export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp && source /opt/ros/humble/setup.bash';
+
+function escapeHtml(text: string): string {
+    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function defaultForType(type: string): string {
+    if (type.endsWith(']')) {
+        return '[]';
+    }
+    if (/^w?string/.test(type)) {
+        return "''";
+    }
+    if (type === 'bool') {
+        return 'false';
+    }
+    if (/^float(32|64)$/.test(type)) {
+        return '0.0';
+    }
+    if (/^(u?int(8|16|32|64)|byte|char)$/.test(type)) {
+        return '0';
+    }
+    return '{}'; // nested message: leave at its defaults
+}
+
+/** Builds a YAML goal template from the goal section of `ros2 interface show <action type>`. */
+export function buildGoalTemplate(interfaceText: string): string {
+    const fields: string[] = [];
+    for (const rawLine of interfaceText.split(/\r?\n/)) {
+        if (rawLine.trim() === '---') {
+            break; // end of the goal section
+        }
+        const line = rawLine.split('#')[0].trim();
+        if (!line || /^\S+\s+\S+\s*=/.test(line) || /^\s/.test(rawLine)) {
+            continue; // blank, comment, constant, or indented line
+        }
+        const parts = line.split(/\s+/);
+        if (parts.length >= 2) {
+            fields.push(`  ${parts[1]}: ${defaultForType(parts[0])}`);
+        }
+    }
+    return fields.length > 0 ? `{\n${fields.join(',\n')}\n}` : '{}';
+}
+
+/** Finds the type of `actionName` in the output of `ros2 action list -t`. */
+export function parseActionType(listOutput: string, actionName: string): string | undefined {
+    for (const line of listOutput.split(/\r?\n/)) {
+        const match = line.trim().match(/^(\S+)\s+\[(.+)\]$/);
+        if (match && match[1] === actionName) {
+            return match[2];
+        }
+    }
+    return undefined;
+}
+
+/** Keeps the goal response, feedback and result; drops the CLI's start-up chatter. */
+export function formatGoalOutput(raw: string): string {
+    const idx = raw.search(/Goal (accepted|rejected)/);
+    if (idx < 0) {
+        return 'Waiting for the action server...';
+    }
+    return raw.slice(idx).replace(/\n{3,}/g, '\n\n').trim();
+}
 
 export function activate(context: vscode.ExtensionContext) {
 
@@ -55,6 +117,14 @@ export function activate(context: vscode.ExtensionContext) {
         });
         context.subscriptions.push(inspectServiceDisposable);
 
+        // Command to open Action Goal Webview tab
+        const inspectActionDisposable = vscode.commands.registerCommand('ros2-assistant.inspectAction', (item: Ros2TreeItem) => {
+            if (item.viewType === 'actions') {
+                ActionGoalPanel.createOrShow(context.extensionUri, item.label);
+            }
+        });
+        context.subscriptions.push(inspectActionDisposable);
+
     } catch (error) {
         console.error('Error during ROS2 Assistant activation:', error);
     }
@@ -95,26 +165,26 @@ class Ros2TreeDataProvider implements vscode.TreeDataProvider<Ros2TreeItem>, vsc
 
         if (this.currentView === 'root') {
             return Promise.resolve([
-                new Ros2TreeItem('list node', vscode.TreeItemCollapsibleState.None, 'root', {
-                    command: 'ros2-assistant.selectItem',
-                    title: 'Select Node View',
-                    arguments: ['nodes']
-                }, new vscode.ThemeIcon('server')),
-                new Ros2TreeItem('list topics', vscode.TreeItemCollapsibleState.None, 'root', {
+                new Ros2TreeItem('List Topics', vscode.TreeItemCollapsibleState.None, 'root', {
                     command: 'ros2-assistant.selectItem',
                     title: 'Select Topics View',
                     arguments: ['topics']
                 }, new vscode.ThemeIcon('broadcast')),
-                new Ros2TreeItem('list services', vscode.TreeItemCollapsibleState.None, 'root', {
+                new Ros2TreeItem('List Actions', vscode.TreeItemCollapsibleState.None, 'root', {
+                    command: 'ros2-assistant.selectItem',
+                    title: 'Select Actions View',
+                    arguments: ['actions']
+                }, new vscode.ThemeIcon('play')),
+                new Ros2TreeItem('List Services', vscode.TreeItemCollapsibleState.None, 'root', {
                     command: 'ros2-assistant.selectItem',
                     title: 'Select Services View',
                     arguments: ['services']
                 }, new vscode.ThemeIcon('symbol-method')),
-                new Ros2TreeItem('list actions', vscode.TreeItemCollapsibleState.None, 'root', {
+                new Ros2TreeItem('List Nodes', vscode.TreeItemCollapsibleState.None, 'root', {
                     command: 'ros2-assistant.selectItem',
-                    title: 'Select Actions View',
-                    arguments: ['actions']
-                }, new vscode.ThemeIcon('play'))
+                    title: 'Select Node View',
+                    arguments: ['nodes']
+                }, new vscode.ThemeIcon('server'))
             ]);
         } else {
             if (this.currentItems.length === 0) {
@@ -151,6 +221,10 @@ class Ros2TreeDataProvider implements vscode.TreeDataProvider<Ros2TreeItem>, vsc
                         command: 'ros2-assistant.inspectService',
                         title: 'Call Service',
                         arguments: [new Ros2TreeItem(item, vscode.TreeItemCollapsibleState.None, 'services')]
+                    } : this.currentView === 'actions' ? {
+                        command: 'ros2-assistant.inspectAction',
+                        title: 'Send Goal',
+                        arguments: [new Ros2TreeItem(item, vscode.TreeItemCollapsibleState.None, 'actions')]
                     } : undefined,
                     new vscode.ThemeIcon(iconName)
                 ))
@@ -874,3 +948,325 @@ class ServiceCallPanel {
 }
 
 export function deactivate() {}
+
+/**
+ * Manages Action Goal Webview Panels
+ */
+class ActionGoalPanel {
+    public static currentPanels: Map<string, ActionGoalPanel> = new Map();
+    private readonly _panel: vscode.WebviewPanel;
+    private _disposables: vscode.Disposable[] = [];
+    private actionType: string = '';
+    private goalProcess: ChildProcess | undefined;
+    private cancelled = false;
+
+    public static createOrShow(extensionUri: vscode.Uri, actionName: string) {
+        const column = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : undefined;
+
+        if (ActionGoalPanel.currentPanels.has(actionName)) {
+            ActionGoalPanel.currentPanels.get(actionName)!._panel.reveal(column);
+            return;
+        }
+
+        const panel = vscode.window.createWebviewPanel(
+            'ros2ActionGoal',
+            `Action: ${actionName}`,
+            column || vscode.ViewColumn.One,
+            {
+                enableScripts: true
+            }
+        );
+
+        ActionGoalPanel.currentPanels.set(actionName, new ActionGoalPanel(panel, actionName));
+    }
+
+    private constructor(panel: vscode.WebviewPanel, private readonly actionName: string) {
+        this._panel = panel;
+        this._panel.webview.html = this._getHtmlForWebview(this.actionName);
+
+        this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
+
+        this._panel.webview.onDidReceiveMessage(
+            message => {
+                if (message.command === 'sendGoal') {
+                    this._sendGoal(message.args);
+                } else if (message.command === 'cancelGoal') {
+                    this._cancelGoal();
+                }
+            },
+            null,
+            this._disposables
+        );
+
+        this._fetchActionType();
+    }
+
+    private _post(message: object) {
+        this._panel.webview.postMessage(message);
+    }
+
+    private _fetchActionType() {
+        const cmd = `bash -c "${ROS_SETUP} && ros2 action list -t"`;
+
+        exec(cmd, { env: process.env }, (error, stdout, stderr) => {
+            const type = error ? undefined : parseActionType(stdout, this.actionName);
+            if (!type) {
+                this.actionType = 'Unknown';
+                this._post({
+                    command: 'initType',
+                    actionType: 'Unknown (is the action server running?)',
+                    error: stderr || error?.message
+                });
+                return;
+            }
+            this.actionType = type;
+            this._post({ command: 'initType', actionType: type });
+            this._fetchGoalTemplate(type);
+        });
+    }
+
+    private _fetchGoalTemplate(actionType: string) {
+        const cmd = `bash -c "${ROS_SETUP} && ros2 interface show ${actionType}"`;
+
+        exec(cmd, { env: process.env }, (error, stdout) => {
+            this._post({
+                command: 'setTemplateOnce',
+                template: error || !stdout ? '{}' : buildGoalTemplate(stdout)
+            });
+        });
+    }
+
+    private _sendGoal(args: string) {
+        if (!this.actionType || this.actionType === 'Unknown') {
+            this._post({ command: 'goalOutput', data: 'Error: Valid action type not found. Cannot send goal.' });
+            return;
+        }
+        if (this.goalProcess) {
+            this._post({ command: 'goalOutput', data: 'A goal is already running. Cancel it first.' });
+            return;
+        }
+
+        const flattenedArgs = args.replace(/\r?\n/g, ' ').replace(/\s+/g, ' ').trim();
+
+        // Values travel through environment variables, so no shell quoting can alter them.
+        const env = {
+            ...process.env,
+            PYTHONUNBUFFERED: '1',
+            ACT_NAME: this.actionName,
+            ACT_TYPE: this.actionType,
+            ACT_GOAL: flattenedArgs
+        };
+        // exec replaces the shell, so signals reach the ros2 process directly.
+        const script = `${ROS_SETUP} && exec ros2 action send_goal --feedback "$ACT_NAME" "$ACT_TYPE" "$ACT_GOAL"`;
+
+        this.cancelled = false;
+        this._post({ command: 'goalOutput', data: `Sending goal to ${this.actionName} (${this.actionType})...` });
+        this._post({ command: 'goalState', running: true });
+
+        let stdout = '';
+        let stderr = '';
+        const child = spawn('bash', ['-c', script], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+        this.goalProcess = child;
+
+        child.stdout?.on('data', (chunk: Buffer) => {
+            stdout += chunk.toString();
+            this._post({ command: 'goalOutput', data: formatGoalOutput(stdout) });
+        });
+        child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+
+        const finish = (message: string) => {
+            this.goalProcess = undefined;
+            this._post({ command: 'goalState', running: false });
+            this._post({ command: 'goalOutput', data: message });
+        };
+
+        child.on('error', (err) => finish(`Failed to start: ${err.message}`));
+        child.on('close', (code) => {
+            if (this.cancelled) {
+                const partial = stdout.search(/Goal (accepted|rejected)/) >= 0 ? formatGoalOutput(stdout) + '\n\n' : '';
+                finish(`${partial}Cancelled by user.`);
+            } else if (code !== 0) {
+                finish(`Error sending goal:\n${(stderr || stdout).trim()}`);
+            } else {
+                finish(formatGoalOutput(stdout));
+            }
+        });
+    }
+
+    private _cancelGoal() {
+        const child = this.goalProcess;
+        if (!child) {
+            return;
+        }
+        this.cancelled = true;
+        child.kill('SIGINT'); // same as Ctrl+C in a terminal
+        setTimeout(() => {
+            if (this.goalProcess === child) {
+                child.kill('SIGKILL');
+            }
+        }, 3000);
+    }
+
+    private _getHtmlForWebview(actionName: string): string {
+        return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Action: ${escapeHtml(actionName)}</title>
+    <style>
+        body {
+            font-family: var(--vscode-editor-font-family, monospace);
+            padding: 20px;
+            background-color: var(--vscode-editor-background);
+            color: var(--vscode-editor-foreground);
+        }
+        h2 {
+            margin-top: 0;
+            color: var(--vscode-symbolIcon-methodForeground, #dcdcaa);
+            border-bottom: 1px solid var(--vscode-panel-border);
+            padding-bottom: 8px;
+        }
+        .info-box {
+            margin-bottom: 15px;
+            font-size: 13px;
+            color: var(--vscode-descriptionForeground);
+        }
+        .input-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-bottom: 15px;
+        }
+        textarea {
+            width: 100%;
+            height: 110px;
+            background-color: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+            border: 1px solid var(--vscode-input-border);
+            padding: 8px;
+            font-family: monospace;
+            border-radius: 4px;
+            resize: vertical;
+        }
+        .button-row {
+            display: flex;
+            gap: 8px;
+        }
+        button {
+            background-color: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            border: none;
+            padding: 8px 14px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        button:hover:not(:disabled) {
+            background-color: var(--vscode-button-hoverBackground);
+        }
+        button:disabled {
+            opacity: 0.5;
+            cursor: default;
+        }
+        button.secondary {
+            background-color: var(--vscode-button-secondaryBackground);
+            color: var(--vscode-button-secondaryForeground);
+        }
+        .section-card {
+            background-color: var(--vscode-textCodeBlock-background);
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 6px;
+            padding: 12px;
+            margin-top: 15px;
+        }
+        .section-title {
+            font-weight: bold;
+            color: var(--vscode-symbolIcon-keywordForeground, #4fc1ff);
+            margin-bottom: 8px;
+            font-size: 13px;
+        }
+        pre {
+            margin: 0;
+            white-space: pre-wrap;
+            word-break: break-all;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <h2>Action Goal: ${escapeHtml(actionName)}</h2>
+    <div class="info-box" id="type-info">Type: Fetching action type...</div>
+
+    <div class="input-group">
+        <label for="goal-input"><strong>Goal (YAML):</strong></label>
+        <textarea id="goal-input">{}</textarea>
+        <div class="button-row">
+            <button id="send-btn">Send Goal</button>
+            <button id="cancel-btn" class="secondary" disabled>Cancel</button>
+        </div>
+    </div>
+
+    <div class="section-card">
+        <div class="section-title">Response, Feedback and Result</div>
+        <pre id="output">Ready to send goal...</pre>
+    </div>
+
+    <script>
+        const vscode = acquireVsCodeApi();
+        const typeInfo = document.getElementById('type-info');
+        const goalInput = document.getElementById('goal-input');
+        const sendBtn = document.getElementById('send-btn');
+        const cancelBtn = document.getElementById('cancel-btn');
+        const outputPre = document.getElementById('output');
+
+        let templateLoaded = false;
+
+        sendBtn.addEventListener('click', () => {
+            vscode.postMessage({ command: 'sendGoal', args: goalInput.value });
+        });
+
+        cancelBtn.addEventListener('click', () => {
+            vscode.postMessage({ command: 'cancelGoal' });
+        });
+
+        window.addEventListener('message', event => {
+            const message = event.data;
+            if (message.command === 'initType') {
+                typeInfo.textContent = 'Type: ' + message.actionType;
+                if (message.error) {
+                    outputPre.textContent = 'Error fetching type: ' + message.error;
+                }
+            } else if (message.command === 'setTemplateOnce') {
+                if (!templateLoaded) {
+                    goalInput.value = message.template;
+                    templateLoaded = true;
+                }
+            } else if (message.command === 'goalState') {
+                sendBtn.disabled = message.running;
+                cancelBtn.disabled = !message.running;
+            } else if (message.command === 'goalOutput') {
+                outputPre.textContent = message.data;
+            }
+        });
+    </script>
+</body>
+</html>`;
+    }
+
+    public dispose() {
+        ActionGoalPanel.currentPanels.delete(this.actionName);
+        if (this.goalProcess) {
+            this.cancelled = true;
+            this.goalProcess.kill('SIGINT');
+        }
+        this._panel.dispose();
+
+        while (this._disposables.length) {
+            const x = this._disposables.pop();
+            if (x) {
+                x.dispose();
+            }
+        }
+    }
+}
