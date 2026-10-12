@@ -490,7 +490,7 @@ class PublishTopicPanel {
             "            types.add(f'{definition.parent.parent.name}/msg/{definition.stem}')",
             "for interface_type in sorted(types):",
             "    print(interface_type)"
-        ].join('\\n');
+        ].join('\n');
         const encodedScript = Buffer.from(discoveryScript, 'utf8').toString('base64');
         const script = `${ROS_SETUP} && exec python3 -c "$(printf %s "${encodedScript}" | base64 -d)"`;
         execFile('bash', ['-c', script], { env: process.env }, (error, stdout, stderr) => {
@@ -498,7 +498,7 @@ class PublishTopicPanel {
                 this._post({ command: 'interfaces', types: [], error: (stderr || error.message).trim() || error.message });
                 return;
             }
-            const types = [...new Set(stdout.split(/\\r?\\n/).map(line => line.trim()).filter(line => /^[A-Za-z][A-Za-z0-9_]*\\/msg\\/[A-Za-z][A-Za-z0-9_]*$/.test(line)))].sort();
+            const types = [...new Set(stdout.split(/\r?\n/).map(line => line.trim()).filter(line => /^[A-Za-z][A-Za-z0-9_]*\/msg\/[A-Za-z][A-Za-z0-9_]*$/.test(line)))].sort();
             this._post({ command: 'interfaces', types });
             if (types.length === 0) {
                 this._post({ command: 'interfaces', types: [], error: 'No ROS 2 message definitions were found in AMENT_PREFIX_PATH. Check that your ROS 2 setup and message packages are sourced.' });
