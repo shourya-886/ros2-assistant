@@ -220,7 +220,14 @@ export function discoverRos2Packages(
         }
     };
 
-    if (!fs.existsSync(resolvedSourceDirectory) || !fs.statSync(resolvedSourceDirectory).isDirectory()) {
+    let sourceDirectoryExists = false;
+    try {
+        sourceDirectoryExists = fs.statSync(resolvedSourceDirectory).isDirectory();
+    } catch {
+        sourceDirectoryExists = false;
+    }
+
+    if (!sourceDirectoryExists) {
         issues.push({
             manifestPath: resolvedSourceDirectory,
             message: 'Workspace src directory does not exist or is not a directory.'
