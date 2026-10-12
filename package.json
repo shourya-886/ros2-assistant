@@ -11,13 +11,27 @@
   ],
   "activationEvents": [],
   "main": "./dist/extension.js",
-  "contributes": {
+"contributes": {
     "commands": [
       {
         "command": "ros2-assistant.helloWorld",
         "title": "Hello World"
+      },
+      {
+        "command": "ros2-assistant.goBack",
+        "title": "Go Back",
+        "icon": "$(arrow-left)"
       }
     ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "ros2-assistant.goBack",
+          "when": "view == ros2View",
+          "group": "navigation"
+        }
+      ]
+    },
     "viewsContainers": {
       "activitybar": [
         {
