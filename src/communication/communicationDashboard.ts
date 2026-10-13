@@ -381,7 +381,7 @@ nav{display:flex;gap:7px;margin:18px 0;flex-wrap:wrap}.summary{display:grid;grid
 <script nonce="${nonce}">
 const vscode=acquireVsCodeApi();let graph=null;
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const renderList=(id,items,kind)=>{document.getElementById(id).innerHTML=items.length?items.map(x=>'<div class="item"><strong>'+esc(x.name||x)+'</strong> <span class="pill">'+esc(x.type||'')+'</span>'+(kind==='topic'?'<div class="muted">Publishers: '+esc((x.publishers||[]).join(', ')||'—')+' · Subscribers: '+esc((x.subscribers||[]).join(', ')||'—')+'</div>':'')+'</div>').join(''):'<div class="item muted">No entries discovered.</div>';};
+const renderList=(id,items,kind)=>{document.getElementById(id).innerHTML=items.length?items.map(x=>'<div class="item"><strong>'+esc(x.name||x)+'</strong> <span class="pill">'+esc(x.type||'')+'</span>'+(kind==='topic'?'<div class="muted">Publishers: '+esc((x.publishers||[]).join(', ')||'—')+' · Subscribers: '+esc((x.subscribers||[]).join(', ')||'—')+'</div>':(kind==='service'||kind==='action')?'<div class="muted">Servers: '+esc((x.servers||[]).join(', ')||'—')+' · Clients: '+esc((x.clients||[]).join(', ')||'—')+'</div>':'')+'</div>').join(''):'<div class="item muted">No entries discovered.</div>';};
 function drawGraph(g){
  const nodes=g.nodes.slice(0,12),topics=g.topics.filter(t=>t.publishers.length||t.subscribers.length).slice(0,12);
  const width=900,row=42,leftX=15,topicX=390,rightX=765,top=20,height=Math.max(170,Math.max(nodes.length,topics.length)*row+30);
