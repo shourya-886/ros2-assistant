@@ -61,6 +61,8 @@ export class InterfaceExplorerPanel {
     }
 
     private fetchInterfaces(): void {
+        // Invalidate any definition request started before this refresh.
+        this.selectionVersion++;
         const discoveryScript = [
             'import os',
             'from pathlib import Path',
@@ -252,6 +254,7 @@ export class InterfaceExplorerPanel {
             status.textContent = message.error || ((message.types || []).length + ' interface(s) found.');
             if (previous && (message.types || []).includes(previous)) {
                 interfaceSelect.value = previous;
+                vscode.postMessage({ command: 'selectInterface', interfaceType: previous });
             } else {
                 definitionTitle.textContent = 'Select an interface to view its definition.';
                 definition.textContent = 'No interface selected.';
