@@ -12,18 +12,7 @@ type GraphSnapshot = {
 };
 
 function runRos(command: string, timeout = 12000): Promise<string> {
-    return new Promise((resolve, reject) => {
-        const script = `${rosEnvironment.setupCommand} && ${command}`;
-        processManager.exec(`bash -lc ${JSON.stringify(script)}`, {
-            env: process.env, timeout, maxBuffer: 2 * 1024 * 1024
-        }, (error, stdout, stderr) => {
-            if (error) {
-                reject(new Error((stderr || error.message || 'ROS command failed').trim()));
-            } else {
-                resolve(stdout);
-            }
-        });
-    });
+    return runRosEnv(command, process.env, timeout);
 }
 
 function lines(output: string): string[] {
@@ -71,7 +60,6 @@ function runRosEnv(command: string, env: NodeJS.ProcessEnv = process.env, timeou
     private refreshing = false;
     private disposed = false;
     private readonly activeProcesses = new Map<string, ChildProcess>();
-    private selectionVersion = 0;
 
     static createOrShow(extensionUri: vscode.Uri): void {
         if (CommunicationDashboard.panel) {
@@ -85,13 +73,14 @@ function runRosEnv(command: string, env: NodeJS.ProcessEnv = process.env, timeou
             { enableScripts: true, retainContextWhenHidden: true }
         );
         CommunicationDashboard.panel = panel;
-        new CommunicationDashboard(panel, extensionUri);
+        new CommunicationDashboard(panel);
     }
 
-    private constructor(private readonly panel: vscode.WebviewPanel, extensionUri: vscode.Uri) {
+    private constructor(private readonly panel: vscode.WebviewPanel) {
         panel.webview.html = this.html();
         panel.onDidDispose(() => this.dispose(), null, this.disposables);
         panel.webview.onDidReceiveMessage(async message => {
+            try {
             if (message?.command === 'refresh') {
                 await this.refresh();
             } else if (message?.command === 'loadTemplate') {
@@ -100,6 +89,10 @@ function runRosEnv(command: string, env: NodeJS.ProcessEnv = process.env, timeou
                 this.publish(message);
             } else if (message?.command === 'stopPublish') {
                 this.stopProcess('publisher');
+            } else if (message?.command === 'startEcho') {
+                this.startEcho(String(message.topic || ''));
+            } else if (message?.command === 'stopEcho') {
+                this.stopProcess('echo');
             } else if (message?.command === 'callService') {
                 this.callService(message);
             } else if (message?.command === 'sendGoal') {
@@ -126,18 +119,31 @@ function runRosEnv(command: string, env: NodeJS.ProcessEnv = process.env, timeou
                     }
                 }
             }
+            } catch (error) {
+                this.panel.webview.postMessage({ command: 'operationError', operation: message?.command, error: error instanceof Error ? error.message : String(error) });
+            }
         }, null, this.disposables);
         void this.refresh();
     }
 
 
     private async loadTemplate(kind: string, type: string): Promise<void> {
-        if (kind !== 'srv' && kind !== 'action') throw new Error('Unsupported interface kind.');
+        if (kind !== 'srv' && kind !== 'action' && kind !== 'msg') throw new Error('Unsupported interface kind.');
         if (!validType(type, kind)) throw new Error('Invalid ROS interface type.');
         const env = { ...process.env, ROS_INTERFACE_TYPE: type };
         const script = 'IFS=/ read -r pkg kind name <<< "$ROS_INTERFACE_TYPE"; IFS=: read -ra prefixes <<< "$AMENT_PREFIX_PATH"; for p in "${prefixes[@]}"; do f="$p/share/$pkg/$kind/$name.$kind"; if [ -f "$f" ]; then cat "$f"; exit 0; fi; done; echo "Definition not found for $ROS_INTERFACE_TYPE" >&2; exit 1';
         const definition = await runRosEnv(script, env, 10000);
-        this.panel.webview.postMessage({ command: kind === 'srv' ? 'serviceTemplate' : 'actionTemplate', template: buildTemplate(definition, kind === 'action') });
+        this.panel.webview.postMessage({ command: kind === 'srv' ? 'serviceTemplate' : kind === 'msg' ? 'topicTemplate' : 'actionTemplate', template: buildTemplate(definition, kind !== 'msg') });
+    }
+
+    private startEcho(topic: string): void {
+        if (this.activeProcesses.has('echo')) throw new Error('A topic subscription is already running.');
+        if (!validName(topic)) throw new Error('Select a valid topic.');
+        const env = { ...process.env, ROS_TOPIC_NAME: topic };
+        const script = rosEnvironment.setupCommand + ' && exec ros2 topic echo "$ROS_TOPIC_NAME"';
+        const child = processManager.spawn('bash', ['-c', script], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+        this.trackProcess('echo', child, 'echoStatus');
+        this.panel.webview.postMessage({ command: 'echoStatus', running: true, text: 'Subscribing to ' + topic + '...' });
     }
 
     private publish(message: any): void {
