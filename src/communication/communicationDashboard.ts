@@ -355,7 +355,7 @@ nav{display:flex;gap:7px;margin:18px 0;flex-wrap:wrap}.summary{display:grid;grid
 <section id="overview" class="view"><div class="summary" id="counts"></div><div class="section card"><h2>Node ↔ Topic graph</h2><p class="muted">Edges are inferred from publisher/subscriber sections in ros2 node info. Only the first 30 nodes are queried for edge detail.</p><div class="graph" id="graph">Refresh to discover the ROS graph.</div></div><div class="section grid"><div class="card"><h2>Services</h2><div id="overview-services"></div></div><div class="card"><h2>Actions</h2><div id="overview-actions"></div></div></div></section>
 <section id="topics" class="view" hidden>
 <div class="grid">
-<div class="card"><h2>Topic Echo</h2><label>Topic<select id="echo-topic"><option value="">Select topic…</option></select></label><div class="actions"><button id="echo-open">Open Echo Panel</button></div><p class="muted">Streams live messages in the dedicated echo panel.</p></div>
+<div class="card"><h2>Topic Echo</h2><label>Topic<select id="echo-topic"><option value="">Select topic…</option></select></label><div class="actions"><button id="echo-start" class="primary">Subscribe</button><button id="echo-stop" disabled>Stop</button></div><pre id="echo-output" class="output">Subscription idle.</pre></div>
 <div class="card"><h2>Publish to Topic</h2>
 <label>Existing topic<select id="pub-topic"><option value="">Select topic…</option></select></label>
 <label>Or new topic name<input id="pub-new-topic" placeholder="/my_topic"></label>
@@ -405,7 +405,8 @@ function render(g,updated){
 document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x===b));document.querySelectorAll('.view').forEach(x=>x.hidden=x.id!==b.dataset.tab);}));
 
 document.getElementById('refresh').addEventListener('click',()=>vscode.postMessage({command:'refresh'}));
-document.getElementById('echo-open').addEventListener('click',()=>{const topic=document.getElementById('echo-topic').value;if(topic)vscode.postMessage({command:'openEcho',topic});});
+document.getElementById('echo-start').addEventListener('click',()=>vscode.postMessage({command:'startEcho',topic:document.getElementById('echo-topic').value}));
+document.getElementById('echo-stop').addEventListener('click',()=>vscode.postMessage({command:'stopEcho'}));
 document.getElementById('pub-topic').addEventListener('change',()=>{const topic=graph.topics.find(x=>x.name===document.getElementById('pub-topic').value);if(topic&&topic.type!=='unknown'){document.getElementById('pub-type').value=topic.type;vscode.postMessage({command:'loadTemplate',kind:'msg',type:topic.type});}});
 document.getElementById('pub-type').addEventListener('change',()=>vscode.postMessage({command:'loadTemplate',kind:'msg',type:document.getElementById('pub-type').value}));
 document.getElementById('pub-start').addEventListener('click',()=>vscode.postMessage({command:'publish',topic:document.getElementById('pub-new-topic').value.trim()||document.getElementById('pub-topic').value,type:document.getElementById('pub-type').value,rate:document.getElementById('pub-rate').value,count:document.getElementById('pub-count').value,yaml:document.getElementById('pub-yaml').value}));
@@ -421,13 +422,15 @@ window.addEventListener('message',e=>{const m=e.data;
  else if(m.command==='topicTemplate'){if(m.template!==undefined)document.getElementById('pub-yaml').value=m.template;if(m.error)document.getElementById('pub-output').textContent=m.error;}
  else if(m.command==='serviceTemplate')document.getElementById('service-request').value=m.template||'{}';
  else if(m.command==='actionTemplate')document.getElementById('action-goal').value=m.template||'{}';
+ else if(m.command==='echoStatus'){document.getElementById('echo-start').disabled=m.running;document.getElementById('echo-stop').disabled=!m.running;document.getElementById('echo-output').textContent=m.text;}
+ else if(m.command==='echoOutput')document.getElementById('echo-output').textContent=(document.getElementById('echo-output').textContent+'\n'+m.text).slice(-12000);
  else if(m.command==='publishStatus'){document.getElementById('pub-start').disabled=m.running;document.getElementById('pub-stop').disabled=!m.running;document.getElementById('pub-output').textContent=m.text;}
  else if(m.command==='publishOutput')document.getElementById('pub-output').textContent=(document.getElementById('pub-output').textContent+'\n'+m.text).slice(-12000);
  else if(m.command==='serviceStatus')document.getElementById('service-output').textContent=m.text;
  else if(m.command==='serviceOutput')document.getElementById('service-output').textContent=(document.getElementById('service-output').textContent+'\n'+m.text).slice(-12000);
  else if(m.command==='actionStatus'){document.getElementById('action-send').disabled=m.running;document.getElementById('action-cancel').disabled=!m.running;document.getElementById('action-output').textContent=m.text;}
  else if(m.command==='actionOutput')document.getElementById('action-output').textContent=(document.getElementById('action-output').textContent+'\n'+m.text).slice(-12000);
- else if(m.command==='operationError'){const id=m.operation==='publish'?'pub-output':m.operation==='callService'?'service-output':m.operation==='sendGoal'?'action-output':'errors';document.getElementById(id).textContent=m.error;}
+ else if(m.command==='operationError'){const id=m.operation==='startEcho'?'echo-output':m.operation==='publish'?'pub-output':m.operation==='callService'?'service-output':m.operation==='sendGoal'?'action-output':'errors';document.getElementById(id).textContent=m.error;}
 });
 </script></body></html>`;
     }
