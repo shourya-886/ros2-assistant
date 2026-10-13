@@ -30,6 +30,11 @@
         "icon": "$(rocket)"
       },
       {
+        "command": "ros2-assistant.openCommunicationDashboard",
+        "title": "ROS 2 Assistant: Communication Dashboard",
+        "icon": "$(graph)"
+      },
+      {
         "command": "ros2-assistant.openInterfaceExplorer",
         "title": "ROS 2 Assistant: Open Interface Explorer",
         "icon": "$(symbol-interface)"
