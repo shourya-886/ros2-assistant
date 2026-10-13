@@ -15,6 +15,18 @@ function runRos(command: string, timeout = 12000): Promise<string> {
     return runRosEnv(command, process.env, timeout);
 }
 
+type RosCommandDiagnostics = { stdout: string; stderr: string; error?: string };
+
+function runRosWithDiagnostics(command: string, timeout = 12000): Promise<RosCommandDiagnostics> {
+    return new Promise(resolve => {
+        processManager.execFile('bash', ['-c', rosEnvironment.setupCommand + ' && ' + command], {
+            env: process.env, timeout, maxBuffer: 2 * 1024 * 1024
+        }, (error, stdout, stderr) => resolve({
+            stdout: stdout || '', stderr: stderr || '', error: error ? error.message : undefined
+        }));
+    });
+}
+
 function lines(output: string): string[] {
     return output.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
 }
@@ -93,7 +105,10 @@ export class CommunicationDashboard {
         panel.onDidDispose(() => this.dispose(), null, this.disposables);
         panel.webview.onDidReceiveMessage(async message => {
             try {
-            if (message?.command === 'refresh') {
+            if (message?.command === 'ready') {
+                // Wait until the webview has installed its message listener before sending graph data.
+                await this.refresh();
+            } else if (message?.command === 'refresh') {
                 await this.refresh();
             } else if (message?.command === 'loadTemplate') {
                 await this.loadTemplate(String(message.kind || ''), String(message.type || ''));
@@ -135,7 +150,6 @@ export class CommunicationDashboard {
                 this.panel.webview.postMessage({ command: 'operationError', operation: message?.command, error: error instanceof Error ? error.message : String(error) });
             }
         }, null, this.disposables);
-        void this.refresh();
     }
 
 
@@ -231,6 +245,8 @@ export class CommunicationDashboard {
         if (!request) {
             throw new Error('Service request cannot be empty.');
         }
+        this.postServiceDebug('Service call requested: ' + name + ' [' + type + ']');
+        this.postServiceDebug('Request YAML: ' + request);
         const env = { ...process.env, ROS_SERVICE_NAME: name, ROS_SERVICE_TYPE: type, ROS_SERVICE_REQUEST: request };
         const script = rosEnvironment.setupCommand + ' && exec ros2 service call "$ROS_SERVICE_NAME" "$ROS_SERVICE_TYPE" "$ROS_SERVICE_REQUEST"';
         const child = processManager.spawn('bash', ['-c', script], { env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -300,12 +316,22 @@ export class CommunicationDashboard {
         this.panel.webview.postMessage({ command: status, running: true, text: 'Stopping...' });
     }
 
+    private postServiceDebug(text: string): void {
+        if (!this.disposed) {
+            this.panel.webview.postMessage({ command: 'serviceDebug', text: '[' + new Date().toLocaleTimeString() + '] ' + text });
+        }
+    }
+
     private async refresh(): Promise<void> {
         if (this.refreshing || this.disposed) {
             return;
         }
         this.refreshing = true;
         this.panel.webview.postMessage({ command: 'loading', loading: true });
+        this.panel.webview.postMessage({ command: 'serviceDebugReset' });
+        this.postServiceDebug('Refresh requested.');
+        this.postServiceDebug('ROS_DISTRO=' + (process.env.ROS_DISTRO || 'unset') + ', ROS_DOMAIN_ID=' + (process.env.ROS_DOMAIN_ID || 'unset') + ', RMW_IMPLEMENTATION=' + (process.env.RMW_IMPLEMENTATION || 'unset') + ', ROS_LOCALHOST_ONLY=' + (process.env.ROS_LOCALHOST_ONLY || 'unset'));
+        this.postServiceDebug('ROS setup: ' + rosEnvironment.setupCommand);
         const errors: string[] = [];
         const safe = async <T>(label: string, task: () => Promise<T>, fallback: T): Promise<T> => {
             try { return await task(); }
@@ -318,13 +344,24 @@ export class CommunicationDashboard {
             const [nodeOutput, topicOutput, serviceOutput, actionOutput] = await Promise.all([
                 safe('Nodes', () => runRos('ros2 node list'), ''),
                 safe('Topics', () => runRos('ros2 topic list -t'), ''),
-                safe('Services', () => runRos('ros2 service list -t'), ''),
+                safe('Services', async () => {
+                    const command = 'ros2 service list -t';
+                    this.postServiceDebug('$ ' + command);
+                    const result = await runRosWithDiagnostics(command);
+                    this.postServiceDebug('Exit: ' + (result.error || '0'));
+                    this.postServiceDebug('stdout (' + lines(result.stdout).length + ' lines):\n' + (result.stdout.trim() || '<empty>'));
+                    this.postServiceDebug('stderr:\n' + (result.stderr.trim() || '<empty>'));
+                    if (result.error) { throw new Error([result.error, result.stderr.trim()].filter(Boolean).join('\n')); }
+                    return result.stdout;
+                }, ''),
                 safe('Actions', () => runRos('ros2 action list -t'), '')
             ]);
             const nodes = lines(nodeOutput).slice(0, 60);
             const typedTopics = parseTyped(topicOutput).slice(0, 100);
             const services = parseTyped(serviceOutput).slice(0, 100);
             const actions = parseTyped(actionOutput).slice(0, 100);
+            this.postServiceDebug('Parsed service count: ' + services.length);
+            this.postServiceDebug(services.length ? services.map(s => s.name + ' [' + s.type + ']').join('\n') : 'No services parsed from command output.');
 
             // Node information provides the graph edges. Bound concurrency and node count to
             // avoid spawning an unbounded number of ROS CLI processes on large graphs.
@@ -366,6 +403,7 @@ export class CommunicationDashboard {
                     }
                 }
             }
+            this.postServiceDebug('Service relationships: ' + services.map(s => s.name + ' | servers=' + (serviceServers.get(s.name) ?? []).join(',') + ' | clients=' + (serviceClients.get(s.name) ?? []).join(',')).join('\n'));
             const snapshot: GraphSnapshot = {
                 nodes,
                 topics: typedTopics.map(topic => ({
@@ -408,7 +446,7 @@ nav{display:flex;gap:7px;margin:18px 0;flex-wrap:wrap}.summary{display:grid;grid
 .pill{font-size:11px;padding:2px 6px;border-radius:10px;background:var(--vscode-badge-background);color:var(--vscode-badge-foreground)}
 .graph{overflow:auto;border:1px solid var(--vscode-panel-border);border-radius:6px;padding:10px;min-height:180px}.graph svg{min-width:760px;width:100%;height:auto}
 .node{fill:var(--vscode-editorWidget-background);stroke:var(--vscode-charts-blue);stroke-width:1.5}.topic{fill:var(--vscode-editorWidget-background);stroke:var(--vscode-charts-green);stroke-width:1.5}.service{fill:var(--vscode-editorWidget-background);stroke:var(--vscode-charts-orange);stroke-width:1.5}.action{fill:var(--vscode-editorWidget-background);stroke:var(--vscode-charts-purple);stroke-width:1.5}.edge{stroke:var(--vscode-descriptionForeground);stroke-width:1.2;fill:none;opacity:.8}.label{fill:var(--vscode-foreground);font:12px var(--vscode-font-family)}
-[hidden]{display:none!important}.error{color:var(--vscode-errorForeground);white-space:pre-wrap}
+.output{max-height:260px;overflow:auto;white-space:pre-wrap;word-break:break-word}.output#service-debug{max-height:420px}.error{color:var(--vscode-errorForeground);white-space:pre-wrap}[hidden]{display:none!important}
 </style></head>
 <body>
 <header><h1>ROS 2 Communication Dashboard</h1><span class="muted" id="updated">Not refreshed</span><button class="primary" id="refresh">Refresh graph</button></header>
@@ -431,7 +469,8 @@ nav{display:flex;gap:7px;margin:18px 0;flex-wrap:wrap}.summary{display:grid;grid
 <label>Service<select id="service-select"><option value="">Select service…</option></select></label><p class="muted" id="service-type">Type: —</p>
 <label>Request YAML<textarea id="service-request" spellcheck="false">{}</textarea></label>
 <div class="actions"><button id="service-call" class="primary">Call Service</button></div><pre id="service-output" class="output">Ready.</pre>
-</div><div class="card"><h2>Service graph</h2><div id="service-list"></div></div></div></section>
+</div><div class="card"><h2>Service graph</h2><div id="service-list"></div></div></div>
+<div class="card section"><h2>Service diagnostics</h2><p class="muted">ROS service discovery and call diagnostics from the extension host.</p><pre id="service-debug" class="output">Waiting for dashboard initialization…</pre></div></section>
 <section id="actions" class="view" hidden><div class="grid"><div class="card"><h2>Send Action Goal</h2>
 <label>Action<select id="action-select"><option value="">Select action…</option></select></label><p class="muted" id="action-type">Type: —</p>
 <label>Goal YAML<textarea id="action-goal" spellcheck="false">{}</textarea></label>
@@ -485,8 +524,12 @@ document.getElementById('service-call').addEventListener('click',()=>vscode.post
 document.getElementById('action-select').addEventListener('change',()=>{const a=graph.actions.find(x=>x.name===document.getElementById('action-select').value);document.getElementById('action-type').textContent='Type: '+(a?a.type:'—');if(a&&a.type!=='unknown')vscode.postMessage({command:'loadTemplate',kind:'action',type:a.type});});
 document.getElementById('action-send').addEventListener('click',()=>vscode.postMessage({command:'sendGoal',name:document.getElementById('action-select').value,type:graph.actions.find(x=>x.name===document.getElementById('action-select').value)?.type,goal:document.getElementById('action-goal').value}));
 document.getElementById('action-cancel').addEventListener('click',()=>vscode.postMessage({command:'cancelGoal'}));
+const serviceDebug=document.getElementById('service-debug');
+function appendServiceDebug(text){serviceDebug.textContent=(serviceDebug.textContent+'\n'+text).slice(-16000);serviceDebug.scrollTop=serviceDebug.scrollHeight;}
 window.addEventListener('message',e=>{const m=e.data;
- if(m.command==='loading'){document.getElementById('refresh').disabled=m.loading;document.getElementById('refresh').textContent=m.loading?'Refreshing…':'Refresh graph';}
+ if(m.command==='serviceDebugReset'){serviceDebug.textContent='';}
+ else if(m.command==='serviceDebug'){appendServiceDebug(m.text);}
+ else if(m.command==='loading'){document.getElementById('refresh').disabled=m.loading;document.getElementById('refresh').textContent=m.loading?'Refreshing…':'Refresh graph';}
  else if(m.command==='graph'){render(m.graph,m.refreshedAt);}
  else if(m.command==='topicTemplate'){if(m.template!==undefined)document.getElementById('pub-yaml').value=m.template;if(m.error)document.getElementById('pub-output').textContent=m.error;}
  else if(m.command==='serviceTemplate')document.getElementById('service-request').value=m.template||'{}';
@@ -501,6 +544,7 @@ window.addEventListener('message',e=>{const m=e.data;
  else if(m.command==='actionOutput')document.getElementById('action-output').textContent=(document.getElementById('action-output').textContent+'\n'+m.text).slice(-12000);
  else if(m.command==='operationError'){const id=m.operation==='startEcho'?'echo-output':m.operation==='publish'?'pub-output':m.operation==='callService'?'service-output':m.operation==='sendGoal'?'action-output':'errors';document.getElementById(id).textContent=m.error;}
 });
+vscode.postMessage({command:'ready'});
 </script></body></html>`;
     }
 
