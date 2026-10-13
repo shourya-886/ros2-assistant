@@ -9,6 +9,7 @@ type GraphSnapshot = {
     services: Array<{ name: string; type: string; servers: string[]; clients: string[] }>;
     actions: Array<{ name: string; type: string; servers: string[]; clients: string[] }>;
     errors: string[];
+    diagnostics?: string[];
 };
 
 function runRos(command: string, timeout = 12000): Promise<string> {
@@ -330,6 +331,12 @@ export class CommunicationDashboard {
             return;
         }
         this.refreshing = true;
+        const diagnostics: string[] = [];
+        const debug = (message: string): void => {
+            const entry = '[' + new Date().toLocaleTimeString() + '] ' + message;
+            diagnostics.push(entry);
+            debug(message);
+        };
         this.panel.webview.postMessage({ command: 'loading', loading: true });
         this.panel.webview.postMessage({ command: 'serviceDebugReset' });
         this.postServiceDebug('Refresh requested.');
@@ -416,7 +423,8 @@ export class CommunicationDashboard {
                 })),
                 services: services.map(service => ({ ...service, servers: serviceServers.get(service.name) ?? [], clients: serviceClients.get(service.name) ?? [] })),
                 actions: actions.map(action => ({ ...action, servers: actionServers.get(action.name) ?? [], clients: actionClients.get(action.name) ?? [] })),
-                errors
+                errors,
+                diagnostics
             };
             this.panel.webview.postMessage({ command: 'graph', graph: snapshot, refreshedAt: new Date().toLocaleTimeString() });
         } finally {
@@ -507,6 +515,8 @@ function drawGraph(g){
 }
 function render(g,updated){
  graph=g;document.getElementById('updated').textContent='Updated '+updated;
+ const debugEl=document.getElementById('service-debug');
+ if(debugEl && Array.isArray(g.diagnostics)){debugEl.textContent=g.diagnostics.join('\\n') || 'Refresh completed; no service diagnostics were produced.';debugEl.scrollTop=debugEl.scrollHeight;}
  document.getElementById('counts').innerHTML=[['Nodes',g.nodes.length],['Topics',g.topics.length],['Services',g.services.length],['Actions',g.actions.length]].map(([n,c])=>'<div class="card"><div class="muted">'+n+'</div><div class="count">'+c+'</div></div>').join('');
  renderList('topic-list',g.topics,'topic');renderList('service-list',g.services,'service');renderList('action-list',g.actions,'action');renderList('node-list',g.nodes.map(name=>({name,type:'node'})),'node');
  const fill=(id,items)=>{const el=document.getElementById(id),old=el.value;el.innerHTML='<option value="">Select…</option>'+items.map(x=>'<option value="'+esc(x.name)+'">'+esc(x.name)+'</option>').join('');if(items.some(x=>x.name===old))el.value=old;};
@@ -532,6 +542,8 @@ document.getElementById('action-send').addEventListener('click',()=>vscode.postM
 document.getElementById('action-cancel').addEventListener('click',()=>vscode.postMessage({command:'cancelGoal'}));
 const serviceDebug=document.getElementById('service-debug');
 function appendServiceDebug(text){serviceDebug.textContent=(serviceDebug.textContent+'\n'+text).slice(-16000);serviceDebug.scrollTop=serviceDebug.scrollHeight;}
+appendServiceDebug('Webview script initialized; waiting for extension-host graph refresh.');
+document.querySelector('[data-tab="services"]').addEventListener('click',()=>appendServiceDebug('Services tab opened.'));
 window.addEventListener('message',e=>{const m=e.data;
  if(m.command==='serviceDebugReset'){serviceDebug.textContent='';}
  else if(m.command==='serviceDebug'){appendServiceDebug(m.text);}
