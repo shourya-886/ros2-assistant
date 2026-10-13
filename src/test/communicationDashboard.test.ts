@@ -1,6 +1,7 @@
 import * as assert from 'assert';
 import { readFileSync } from 'fs';
 import { Script } from 'vm';
+import { JSDOM } from 'jsdom';
 import * as path from 'path';
 import { buildTemplate, parseTyped, validName, validType } from '../communication/communicationDashboard';
 
@@ -8,6 +9,31 @@ suite('ROS 2 communication dashboard helpers', () => {
     test('dashboard webview script parses as JavaScript', () => {
         const script = readFileSync(path.resolve(__dirname, '../../media/dashboard.js'), 'utf8');
         assert.doesNotThrow(() => new Script(script, { filename: 'media/dashboard.js' }));
+    });
+
+    test('dashboard script starts, posts ready, and renders a graph', () => {
+        const script = readFileSync(path.resolve(__dirname, '../../media/dashboard.js'), 'utf8');
+        const source = readFileSync(path.resolve(__dirname, '../../src/communication/communicationDashboard.ts'), 'utf8');
+        const htmlMatch = source.match(/const html = `([\s\S]*?)`;\s*return secureWebviewHtml/);
+        assert.ok(htmlMatch, 'dashboard HTML template should be present');
+        const html = htmlMatch[1].replace('${scriptUri}', 'dashboard.js').replace('nonce="__NONCE__"', 'nonce="test-nonce"');
+        const dom = new JSDOM(html, { runScripts: 'outside-only' });
+        const posted: Array<{ command: string }> = [];
+        const errors: unknown[] = [];
+        Object.assign(dom.window, { acquireVsCodeApi: () => ({ postMessage: (message: { command: string }) => posted.push(message) }) });
+        dom.window.addEventListener('error', event => errors.push((event as ErrorEvent).error));
+
+        dom.window.eval(script);
+        assert.deepStrictEqual(posted.map(message => message.command), ['ready']);
+        dom.window.dispatchEvent(new dom.window.MessageEvent('message', { data: {
+            command: 'graph',
+            refreshedAt: 'now',
+            graph: { nodes: ['/talker'], topics: [], services: [], actions: [], errors: [] }
+        } }));
+
+        assert.strictEqual(dom.window.document.querySelector('.count')?.textContent, '1');
+        assert.deepStrictEqual(errors, []);
+        dom.window.close();
     });
 
     test('parses typed ROS graph entries', () => {

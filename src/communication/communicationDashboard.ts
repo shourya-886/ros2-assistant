@@ -349,7 +349,18 @@ export class CommunicationDashboard {
             for (let index = 0; index < nodesToInspect.length; index += 5) {
                 const batch = await Promise.all(nodesToInspect.slice(index, index + 5).map(async node => ({
                     node,
-                    info: await safe('Node ' + node, () => runRos('ros2 node info \"$ROS_NODE_NAME\"', { ...process.env, ROS_NODE_NAME: node }, 8000), '')
+                    info: await safe('Node ' + node, async () => {
+                        try {
+                            return await runRos('ros2 node info \"$ROS_NODE_NAME\"', { ...process.env, ROS_NODE_NAME: node }, 8000);
+                        } catch (error) {
+                            const detail = error instanceof Error ? error.message : String(error);
+                            // Nodes can disappear between `node list` and the follow-up info query.
+                            if (/Unable to find node/i.test(detail)) {
+                                return '';
+                            }
+                            throw error;
+                        }
+                    }, '')
                 })));
                 nodeInfo.push(...batch);
             }
@@ -417,11 +428,15 @@ button,.tab{border:1px solid var(--vscode-button-border,var(--vscode-panel-borde
 button.primary,.tab.active{background:var(--vscode-button-background);color:var(--vscode-button-foreground)}
 nav{display:flex;gap:7px;margin:18px 0;flex-wrap:wrap}.summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px}
 .card{border:1px solid var(--vscode-panel-border);border-radius:6px;padding:12px;background:var(--vscode-sideBar-background)}.count{font-size:25px;font-weight:600}.section{margin-top:14px}.section h2{font-size:15px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px}
+.actions{display:flex;gap:8px;margin:12px 0}
+.card>label,.form-row{display:grid;grid-template-columns:minmax(110px,1fr) minmax(0,1.25fr);align-items:center;gap:8px;margin:10px 0}
+.card>label input,.card>label select,.card>label textarea,.form-row output{box-sizing:border-box;width:100%;min-width:0}
+.form-row output{display:block;padding:6px 8px;border:1px solid var(--vscode-input-border);border-radius:4px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);overflow-wrap:anywhere}
 .item{padding:9px;border-bottom:1px solid var(--vscode-panel-border);font-family:var(--vscode-editor-font-family);font-size:12px;overflow-wrap:anywhere}.item:last-child{border:0}
 .pill{font-size:11px;padding:2px 6px;border-radius:10px;background:var(--vscode-badge-background);color:var(--vscode-badge-foreground)}
 .graph{overflow:auto;border:1px solid var(--vscode-panel-border);border-radius:6px;padding:10px;min-height:180px}.graph svg{min-width:760px;width:100%;height:auto}
 .node{fill:var(--vscode-editorWidget-background);stroke:var(--vscode-charts-blue);stroke-width:1.5}.topic{fill:var(--vscode-editorWidget-background);stroke:var(--vscode-charts-green);stroke-width:1.5}.service{fill:var(--vscode-editorWidget-background);stroke:var(--vscode-charts-orange);stroke-width:1.5}.action{fill:var(--vscode-editorWidget-background);stroke:var(--vscode-charts-purple);stroke-width:1.5}.edge{stroke:var(--vscode-descriptionForeground);stroke-width:1.2;fill:none;opacity:.8}.label{fill:var(--vscode-foreground);font:12px var(--vscode-font-family)}
-.output{max-height:260px;overflow:auto;white-space:pre-wrap;word-break:break-word}.output#service-debug{max-height:420px}.error{color:var(--vscode-errorForeground);white-space:pre-wrap}[hidden]{display:none!important}
+.output{max-height:260px;overflow:auto;white-space:pre-wrap;word-break:break-word}.error{color:var(--vscode-errorForeground);white-space:pre-wrap}[hidden]{display:none!important}
 </style></head>
 <body>
 <header><h1>ROS 2 Communication Dashboard</h1><span class="muted" id="updated">Not refreshed</span><button class="primary" id="refresh">Refresh graph</button></header>
@@ -442,13 +457,13 @@ nav{display:flex;gap:7px;margin:18px 0;flex-wrap:wrap}.summary{display:grid;grid
 </div></div><div class="card section"><h2>Topic inventory</h2><div id="topic-list"></div></div></section>
 <!-- Services tab: discovery, request execution, and graph relationships. -->
 <section id="services" class="view" hidden><div class="grid"><div class="card"><h2>Call Service</h2>
-<label>Service<select id="service-select"><option value="">Select service…</option></select></label><p class="muted" id="service-type">Type: —</p>
+<label>Service<select id="service-select"><option value="">Select service…</option></select></label><div class="form-row"><span>Type</span><output id="service-type">—</output></div>
 <label>Request YAML<textarea id="service-request" spellcheck="false">{}</textarea></label>
 <div class="actions"><button id="service-call" class="primary">Call Service</button></div><pre id="service-output" class="output">Ready.</pre>
 </div><div class="card"><h2>Service graph</h2><div id="service-list"></div></div></div>
 </section>
 <section id="actions" class="view" hidden><div class="grid"><div class="card"><h2>Send Action Goal</h2>
-<label>Action<select id="action-select"><option value="">Select action…</option></select></label><p class="muted" id="action-type">Type: —</p>
+<label>Action<select id="action-select"><option value="">Select action…</option></select></label><div class="form-row"><span>Type</span><output id="action-type">—</output></div>
 <label>Goal YAML<textarea id="action-goal" spellcheck="false">{}</textarea></label>
 <div class="actions"><button id="action-send" class="primary">Send Goal</button><button id="action-cancel" disabled>Cancel Goal</button></div><pre id="action-output" class="output">Ready.</pre>
 </div><div class="card"><h2>Action graph</h2><div id="action-list"></div></div></div></section>
