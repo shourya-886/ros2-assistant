@@ -344,9 +344,29 @@ nav{display:flex;gap:7px;margin:18px 0;flex-wrap:wrap}.summary{display:grid;grid
 <header><h1>ROS 2 Communication Dashboard</h1><span class="muted" id="updated">Not refreshed</span><button class="primary" id="refresh">Refresh graph</button></header>
 <nav><button class="tab active" data-tab="overview">Overview</button><button class="tab" data-tab="topics">Topics</button><button class="tab" data-tab="services">Services</button><button class="tab" data-tab="actions">Actions</button><button class="tab" data-tab="nodes">Nodes</button></nav>
 <section id="overview" class="view"><div class="summary" id="counts"></div><div class="section card"><h2>Node ↔ Topic graph</h2><p class="muted">Edges are inferred from publisher/subscriber sections in ros2 node info. Only the first 30 nodes are queried for edge detail.</p><div class="graph" id="graph">Refresh to discover the ROS graph.</div></div><div class="section grid"><div class="card"><h2>Services</h2><div id="overview-services"></div></div><div class="card"><h2>Actions</h2><div id="overview-actions"></div></div></div></section>
-<section id="topics" class="view" hidden><div class="card"><h2>Topics</h2><div id="topic-list"></div></div></section>
-<section id="services" class="view" hidden><div class="card"><h2>Services</h2><div id="service-list"></div></div></section>
-<section id="actions" class="view" hidden><div class="card"><h2>Actions</h2><div id="action-list"></div></div></section>
+<section id="topics" class="view" hidden>
+<div class="grid">
+<div class="card"><h2>Topic Echo</h2><label>Topic<select id="echo-topic"><option value="">Select topic…</option></select></label><div class="actions"><button id="echo-open">Open Echo Panel</button></div><p class="muted">Streams live messages in the dedicated echo panel.</p></div>
+<div class="card"><h2>Publish to Topic</h2>
+<label>Existing topic<select id="pub-topic"><option value="">Select topic…</option></select></label>
+<label>Or new topic name<input id="pub-new-topic" placeholder="/my_topic"></label>
+<label>Message type<input id="pub-type" placeholder="std_msgs/msg/String"></label>
+<label>Publish rate (Hz)<input id="pub-rate" type="number" min="0.1" max="1000" step="0.1" value="1"></label>
+<label>Number of messages<input id="pub-count" type="number" min="1" max="100000" step="1" value="1"></label>
+<label>Message YAML<textarea id="pub-yaml" spellcheck="false">{}</textarea></label>
+<div class="actions"><button id="pub-start" class="primary">Publish</button><button id="pub-stop" disabled>Stop</button></div>
+<pre id="pub-output" class="output">Publisher idle.</pre>
+</div></div><div class="card section"><h2>Topic inventory</h2><div id="topic-list"></div></div></section>
+<section id="services" class="view" hidden><div class="grid"><div class="card"><h2>Call Service</h2>
+<label>Service<select id="service-select"><option value="">Select service…</option></select></label><p class="muted" id="service-type">Type: —</p>
+<label>Request YAML<textarea id="service-request" spellcheck="false">{}</textarea></label>
+<div class="actions"><button id="service-call" class="primary">Call Service</button></div><pre id="service-output" class="output">Ready.</pre>
+</div><div class="card"><h2>Service graph</h2><div id="service-list"></div></div></div></section>
+<section id="actions" class="view" hidden><div class="grid"><div class="card"><h2>Send Action Goal</h2>
+<label>Action<select id="action-select"><option value="">Select action…</option></select></label><p class="muted" id="action-type">Type: —</p>
+<label>Goal YAML<textarea id="action-goal" spellcheck="false">{}</textarea></label>
+<div class="actions"><button id="action-send" class="primary">Send Goal</button><button id="action-cancel" disabled>Cancel Goal</button></div><pre id="action-output" class="output">Ready.</pre>
+</div><div class="card"><h2>Action graph</h2><div id="action-list"></div></div></div></section>
 <section id="nodes" class="view" hidden><div class="card"><h2>Nodes</h2><div id="node-list"></div></div></section>
 <div class="section muted" id="errors"></div>
 <script nonce="${nonce}">
@@ -368,12 +388,38 @@ function render(g,updated){
  graph=g;document.getElementById('updated').textContent='Updated '+updated;
  document.getElementById('counts').innerHTML=[['Nodes',g.nodes.length],['Topics',g.topics.length],['Services',g.services.length],['Actions',g.actions.length]].map(([n,c])=>'<div class="card"><div class="muted">'+n+'</div><div class="count">'+c+'</div></div>').join('');
  renderList('topic-list',g.topics,'topic');renderList('service-list',g.services,'service');renderList('action-list',g.actions,'action');renderList('node-list',g.nodes.map(name=>({name,type:'node'})),'node');
+ const fill=(id,items)=>{const el=document.getElementById(id),old=el.value;el.innerHTML='<option value="">Select…</option>'+items.map(x=>'<option value="'+esc(x.name)+'">'+esc(x.name)+'</option>').join('');if(items.some(x=>x.name===old))el.value=old;};
+ fill('echo-topic',g.topics);fill('pub-topic',g.topics);fill('service-select',g.services);fill('action-select',g.actions);
  renderList('overview-services',g.services.slice(0,8),'service');renderList('overview-actions',g.actions.slice(0,8),'action');drawGraph(g);
  document.getElementById('errors').innerHTML=g.errors.length?'<div class="error">'+g.errors.map(esc).join('\n')+'</div>':'';
 }
 document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x===b));document.querySelectorAll('.view').forEach(x=>x.hidden=x.id!==b.dataset.tab);}));
+
 document.getElementById('refresh').addEventListener('click',()=>vscode.postMessage({command:'refresh'}));
-window.addEventListener('message',e=>{if(e.data.command==='loading'){document.getElementById('refresh').disabled=e.data.loading;document.getElementById('refresh').textContent=e.data.loading?'Refreshing…':'Refresh graph';}else if(e.data.command==='graph'){render(e.data.graph,e.data.refreshedAt);}});
+document.getElementById('echo-open').addEventListener('click',()=>{const topic=document.getElementById('echo-topic').value;if(topic)vscode.postMessage({command:'openEcho',topic});});
+document.getElementById('pub-topic').addEventListener('change',()=>{const topic=graph.topics.find(x=>x.name===document.getElementById('pub-topic').value);if(topic&&topic.type!=='unknown'){document.getElementById('pub-type').value=topic.type;vscode.postMessage({command:'loadTemplate',kind:'msg',type:topic.type});}});
+document.getElementById('pub-type').addEventListener('change',()=>vscode.postMessage({command:'loadTemplate',kind:'msg',type:document.getElementById('pub-type').value}));
+document.getElementById('pub-start').addEventListener('click',()=>vscode.postMessage({command:'publish',topic:document.getElementById('pub-new-topic').value.trim()||document.getElementById('pub-topic').value,type:document.getElementById('pub-type').value,rate:document.getElementById('pub-rate').value,count:document.getElementById('pub-count').value,yaml:document.getElementById('pub-yaml').value}));
+document.getElementById('pub-stop').addEventListener('click',()=>vscode.postMessage({command:'stopPublish'}));
+document.getElementById('service-select').addEventListener('change',()=>{const s=graph.services.find(x=>x.name===document.getElementById('service-select').value);document.getElementById('service-type').textContent='Type: '+(s?s.type:'—');if(s&&s.type!=='unknown')vscode.postMessage({command:'loadTemplate',kind:'srv',type:s.type});});
+document.getElementById('service-call').addEventListener('click',()=>vscode.postMessage({command:'callService',name:document.getElementById('service-select').value,type:graph.services.find(x=>x.name===document.getElementById('service-select').value)?.type,request:document.getElementById('service-request').value}));
+document.getElementById('action-select').addEventListener('change',()=>{const a=graph.actions.find(x=>x.name===document.getElementById('action-select').value);document.getElementById('action-type').textContent='Type: '+(a?a.type:'—');if(a&&a.type!=='unknown')vscode.postMessage({command:'loadTemplate',kind:'action',type:a.type});});
+document.getElementById('action-send').addEventListener('click',()=>vscode.postMessage({command:'sendGoal',name:document.getElementById('action-select').value,type:graph.actions.find(x=>x.name===document.getElementById('action-select').value)?.type,goal:document.getElementById('action-goal').value}));
+document.getElementById('action-cancel').addEventListener('click',()=>vscode.postMessage({command:'cancelGoal'}));
+window.addEventListener('message',e=>{const m=e.data;
+ if(m.command==='loading'){document.getElementById('refresh').disabled=m.loading;document.getElementById('refresh').textContent=m.loading?'Refreshing…':'Refresh graph';}
+ else if(m.command==='graph'){render(m.graph,m.refreshedAt);}
+ else if(m.command==='topicTemplate'){if(m.template!==undefined)document.getElementById('pub-yaml').value=m.template;if(m.error)document.getElementById('pub-output').textContent=m.error;}
+ else if(m.command==='serviceTemplate')document.getElementById('service-request').value=m.template||'{}';
+ else if(m.command==='actionTemplate')document.getElementById('action-goal').value=m.template||'{}';
+ else if(m.command==='publishStatus'){document.getElementById('pub-start').disabled=m.running;document.getElementById('pub-stop').disabled=!m.running;document.getElementById('pub-output').textContent=m.text;}
+ else if(m.command==='publishOutput')document.getElementById('pub-output').textContent=(document.getElementById('pub-output').textContent+'\n'+m.text).slice(-12000);
+ else if(m.command==='serviceStatus')document.getElementById('service-output').textContent=m.text;
+ else if(m.command==='serviceOutput')document.getElementById('service-output').textContent=(document.getElementById('service-output').textContent+'\n'+m.text).slice(-12000);
+ else if(m.command==='actionStatus'){document.getElementById('action-send').disabled=m.running;document.getElementById('action-cancel').disabled=!m.running;document.getElementById('action-output').textContent=m.text;}
+ else if(m.command==='actionOutput')document.getElementById('action-output').textContent=(document.getElementById('action-output').textContent+'\n'+m.text).slice(-12000);
+ else if(m.command==='operationError'){const id=m.operation==='publish'?'pub-output':m.operation==='callService'?'service-output':m.operation==='sendGoal'?'action-output':'errors';document.getElementById(id).textContent=m.error;}
+});
 </script></body></html>`;
     }
 
