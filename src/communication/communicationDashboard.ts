@@ -55,6 +55,8 @@ function runRosEnv(command: string, env: NodeJS.ProcessEnv = process.env, timeou
         });
     });
 }
+
+export class CommunicationDashboard {
     private static panel: vscode.WebviewPanel | undefined;
     private readonly disposables: vscode.Disposable[] = [];
     private refreshing = false;
