@@ -55,6 +55,9 @@ Opens a dashboard for `ros2 launch` (also available from the Command Palette as 
 - Has a ROS 2 node list you can refresh. It shows all nodes in the ROS graph, not only the ones from a given launch session, because ROS 2 has no reliable way to map a node to the process that started it.
 - If `<workspace>/install/setup.bash` exists, it is sourced before launching, so your built packages are found.
 
+### Bag to text
+Choose **ROS 2 Assistant: Bag to text** from the Command Palette or the sidebar, then select a folder containing a rosbag2 `.yaml` metadata file and `.db3` database. The extension reads the bag with the sourced ROS 2 installation, deserializes each recorded message, and streams its topic, timestamp and YAML fields into a webview. Other files in the folder are ignored. If either required file is missing, the extension explains which file to add.
+
 ### Interface Explorer
 Opens a read-only browser for the ROS 2 interface definitions installed on your machine (also available from the Command Palette as **ROS 2 Assistant: Open Interface Explorer**).
 
@@ -129,6 +132,8 @@ src/
   launch/
     launchManager.ts      launch file discovery, argument parsing, session handling
     launchDashboard.ts    Launch Manager webview
+  bags/
+    bagToText.ts          rosbag2 database conversion and text webview
   interfaces/
     interfaceExplorer.ts  Interface Explorer webview and interface discovery
   test/                   tests for the backend, the launch manager and the interface explorer

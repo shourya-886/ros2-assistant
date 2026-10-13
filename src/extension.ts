@@ -7,6 +7,7 @@ import { LaunchManager } from './launch/launchManager';
 import { LaunchManagerDashboard } from './launch/launchDashboard';
 import { InterfaceExplorerPanel } from './interfaces/interfaceExplorer';
 import { buildTemplate, CommunicationDashboard } from './communication/communicationDashboard';
+import { BagToTextPanel, inspectBagFolder, missingBagFolderMessage } from './bags/bagToText';
 import { existsSync, readdirSync } from 'fs';
 import * as path from 'path';
 
@@ -257,6 +258,32 @@ export async function activate(context: vscode.ExtensionContext) {
             InterfaceExplorerPanel.createOrShow(context.extensionUri);
         });
         context.subscriptions.push(interfaceExplorerDisposable);
+
+        const bagToTextDisposable = vscode.commands.registerCommand('ros2-assistant.bagToText', async () => {
+            const selected = await vscode.window.showOpenDialog({
+                canSelectFiles: false,
+                canSelectFolders: true,
+                canSelectMany: false,
+                openLabel: 'Convert bag to text',
+                title: 'Select a ROS 2 bag folder'
+            });
+            const folder = selected?.[0]?.fsPath;
+            if (!folder) {
+                return;
+            }
+            try {
+                const status = inspectBagFolder(folder);
+                const missingFileMessage = missingBagFolderMessage(status);
+                if (missingFileMessage) {
+                    void vscode.window.showErrorMessage(missingFileMessage);
+                    return;
+                }
+                BagToTextPanel.create(folder);
+            } catch (error) {
+                void vscode.window.showErrorMessage(`Could not read the selected folder: ${error instanceof Error ? error.message : String(error)}`);
+            }
+        });
+        context.subscriptions.push(bagToTextDisposable);
     } catch (error) {
         console.error('Error during ROS2 Assistant activation:', error);
         vscode.window.showErrorMessage(`ROS2 Assistant failed to start: ${error instanceof Error ? error.message : String(error)}`);
@@ -333,7 +360,11 @@ class Ros2TreeDataProvider implements vscode.TreeDataProvider<Ros2TreeItem>, vsc
                 new Ros2TreeItem('Interface Explorer', vscode.TreeItemCollapsibleState.None, 'root', {
                     command: 'ros2-assistant.openInterfaceExplorer',
                     title: 'Open ROS 2 Interface Explorer'
-                }, new vscode.ThemeIcon('symbol-interface'))
+                }, new vscode.ThemeIcon('symbol-interface')),
+                new Ros2TreeItem('Bag to text', vscode.TreeItemCollapsibleState.None, 'root', {
+                    command: 'ros2-assistant.bagToText',
+                    title: 'Convert a ROS 2 bag to readable text'
+                }, new vscode.ThemeIcon('file-text'))
             ]);
         } else {
             if (this.currentItems.length === 0) {

@@ -38,6 +38,11 @@
         "command": "ros2-assistant.openInterfaceExplorer",
         "title": "ROS 2 Assistant: Open Interface Explorer",
         "icon": "$(symbol-interface)"
+      },
+      {
+        "command": "ros2-assistant.bagToText",
+        "title": "ROS 2 Assistant: Bag to text",
+        "icon": "$(file-text)"
       }
     ],
     "menus": {
