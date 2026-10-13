@@ -338,7 +338,6 @@ export class CommunicationDashboard {
             this.postServiceDebug(message);
         };
         this.panel.webview.postMessage({ command: 'loading', loading: true });
-        this.panel.webview.postMessage({ command: 'serviceDebugReset' });
         debug('Refresh requested.');
         debug('ROS_DISTRO=' + (process.env.ROS_DISTRO || 'unset') + ', ROS_DOMAIN_ID=' + (process.env.ROS_DOMAIN_ID || 'unset') + ', RMW_IMPLEMENTATION=' + (process.env.RMW_IMPLEMENTATION || 'unset') + ', ROS_LOCALHOST_ONLY=' + (process.env.ROS_LOCALHOST_ONLY || 'unset'));
         debug('ROS setup: ' + rosEnvironment.setupCommand);
@@ -545,8 +544,7 @@ function appendServiceDebug(text){serviceDebug.textContent=(serviceDebug.textCon
 appendServiceDebug('Webview script initialized; waiting for extension-host graph refresh.');
 document.querySelector('[data-tab="services"]').addEventListener('click',()=>appendServiceDebug('Services tab opened.'));
 window.addEventListener('message',e=>{const m=e.data;
- if(m.command==='serviceDebugReset'){serviceDebug.textContent='';}
- else if(m.command==='serviceDebug'){appendServiceDebug(m.text);}
+ if(m.command==='serviceDebug'){appendServiceDebug(m.text);}
  else if(m.command==='loading'){document.getElementById('refresh').disabled=m.loading;document.getElementById('refresh').textContent=m.loading?'Refreshing…':'Refresh graph';}
  else if(m.command==='graph'){render(m.graph,m.refreshedAt);}
  else if(m.command==='topicTemplate'){if(m.template!==undefined)document.getElementById('pub-yaml').value=m.template;if(m.error)document.getElementById('pub-output').textContent=m.error;}
