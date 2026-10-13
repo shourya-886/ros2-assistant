@@ -37,11 +37,17 @@ export function validType(value: string, kind: 'msg' | 'srv' | 'action'): boolea
 export function buildTemplate(definition: string, action = false): string {
     const fields: string[] = [];
     for (const raw of definition.split(/\r?\n/)) {
-        if (action && raw.trim() === '---') break;
+        if (action && raw.trim() === '---') {
+            break;
+        }
         const line = raw.split('#')[0].trim();
-        if (!line || /^\S+\s+\S+\s*=/.test(line) || /^\s/.test(raw)) continue;
+        if (!line || /^\S+\s+\S+\s*=/.test(line) || /^\s/.test(raw)) {
+            continue;
+        }
         const parts = line.split(/\s+/);
-        if (parts.length < 2) continue;
+        if (parts.length < 2) {
+            continue;
+        }
         const type = parts[0];
         const value = type.endsWith(']') ? '[]' : /^w?string/.test(type) ? "''" : type === 'bool' ? 'false' : /^float(32|64)$/.test(type) ? '0.0' : /^(u?int(8|16|32|64)|byte|char)$/.test(type) ? '0' : '{}';
         fields.push('  ' + parts[1] + ': ' + value);
@@ -51,7 +57,11 @@ export function buildTemplate(definition: string, action = false): string {
 function runRosEnv(command: string, env: NodeJS.ProcessEnv = process.env, timeout = 12000): Promise<string> {
     return new Promise((resolve, reject) => {
         processManager.execFile('bash', ['-c', rosEnvironment.setupCommand + ' && ' + command], { env, timeout, maxBuffer: 2 * 1024 * 1024 }, (error, stdout, stderr) => {
-            if (error) reject(new Error((stderr || error.message || 'ROS command failed').trim())); else resolve(stdout);
+            if (error) {
+                reject(new Error((stderr || error.message || 'ROS command failed').trim()));
+            } else {
+                resolve(stdout);
+            }
         });
     });
 }
@@ -130,8 +140,12 @@ export class CommunicationDashboard {
 
 
     private async loadTemplate(kind: string, type: string): Promise<void> {
-        if (kind !== 'srv' && kind !== 'action' && kind !== 'msg') throw new Error('Unsupported interface kind.');
-        if (!validType(type, kind)) throw new Error('Invalid ROS interface type.');
+        if (kind !== 'srv' && kind !== 'action' && kind !== 'msg') {
+            throw new Error('Unsupported interface kind.');
+        }
+        if (!validType(type, kind)) {
+            throw new Error('Invalid ROS interface type.');
+        }
         const env = { ...process.env, ROS_INTERFACE_TYPE: type };
         const script = 'IFS=/ read -r pkg kind name <<< "$ROS_INTERFACE_TYPE"; IFS=: read -ra prefixes <<< "$AMENT_PREFIX_PATH"; for p in "${prefixes[@]}"; do f="$p/share/$pkg/$kind/$name.$kind"; if [ -f "$f" ]; then cat "$f"; exit 0; fi; done; echo "Definition not found for $ROS_INTERFACE_TYPE" >&2; exit 1';
         const definition = await runRosEnv(script, env, 10000);
@@ -139,8 +153,12 @@ export class CommunicationDashboard {
     }
 
     private startEcho(topic: string): void {
-        if (this.activeProcesses.has('echo')) throw new Error('A topic subscription is already running.');
-        if (!validName(topic)) throw new Error('Select a valid topic.');
+        if (this.activeProcesses.has('echo')) {
+            throw new Error('A topic subscription is already running.');
+        }
+        if (!validName(topic)) {
+            throw new Error('Select a valid topic.');
+        }
         const env = { ...process.env, ROS_TOPIC_NAME: topic };
         const script = rosEnvironment.setupCommand + ' && exec ros2 topic echo "$ROS_TOPIC_NAME"';
         const child = processManager.spawn('bash', ['-c', script], { env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -149,16 +167,28 @@ export class CommunicationDashboard {
     }
 
     private publish(message: any): void {
-        if (this.activeProcesses.has('publisher')) throw new Error('A publisher is already running.');
+        if (this.activeProcesses.has('publisher')) {
+            throw new Error('A publisher is already running.');
+        }
         const topic = String(message.topic || '').trim();
         const type = String(message.type || '').trim();
         const yaml = String(message.yaml || '');
         const rate = Number(message.rate), count = Number(message.count);
-        if (!validName(topic)) throw new Error('Enter a valid absolute ROS topic name.');
-        if (!validType(type, 'msg')) throw new Error('Select a valid ROS message type.');
-        if (!Number.isFinite(rate) || rate <= 0 || rate > 1000) throw new Error('Publish rate must be between 0 and 1000 Hz.');
-        if (!Number.isInteger(count) || count < 1 || count > 100000) throw new Error('Message count must be between 1 and 100000.');
-        if (!yaml.trim()) throw new Error('Message YAML cannot be empty.');
+        if (!validName(topic)) {
+            throw new Error('Enter a valid absolute ROS topic name.');
+        }
+        if (!validType(type, 'msg')) {
+            throw new Error('Select a valid ROS message type.');
+        }
+        if (!Number.isFinite(rate) || rate <= 0 || rate > 1000) {
+            throw new Error('Publish rate must be between 0 and 1000 Hz.');
+        }
+        if (!Number.isInteger(count) || count < 1 || count > 100000) {
+            throw new Error('Message count must be between 1 and 100000.');
+        }
+        if (!yaml.trim()) {
+            throw new Error('Message YAML cannot be empty.');
+        }
         const py = [
             'import os,time,yaml,rclpy',
             'from contextlib import suppress',
@@ -187,12 +217,20 @@ export class CommunicationDashboard {
     }
 
     private callService(message: any): void {
-        if (this.activeProcesses.has('service')) throw new Error('A service call is already running.');
+        if (this.activeProcesses.has('service')) {
+            throw new Error('A service call is already running.');
+        }
         const name = String(message.name || '').trim(), type = String(message.type || '').trim();
         const request = String(message.request || '').replace(/\r?\n/g, ' ').replace(/\s+/g, ' ').trim();
-        if (!validName(name)) throw new Error('Select a valid service name.');
-        if (!validType(type, 'srv')) throw new Error('Select a valid service type.');
-        if (!request) throw new Error('Service request cannot be empty.');
+        if (!validName(name)) {
+            throw new Error('Select a valid service name.');
+        }
+        if (!validType(type, 'srv')) {
+            throw new Error('Select a valid service type.');
+        }
+        if (!request) {
+            throw new Error('Service request cannot be empty.');
+        }
         const env = { ...process.env, ROS_SERVICE_NAME: name, ROS_SERVICE_TYPE: type, ROS_SERVICE_REQUEST: request };
         const script = rosEnvironment.setupCommand + ' && exec ros2 service call "$ROS_SERVICE_NAME" "$ROS_SERVICE_TYPE" "$ROS_SERVICE_REQUEST"';
         const child = processManager.spawn('bash', ['-c', script], { env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -201,12 +239,20 @@ export class CommunicationDashboard {
     }
 
     private sendGoal(message: any): void {
-        if (this.activeProcesses.has('action')) throw new Error('An action goal is already running.');
+        if (this.activeProcesses.has('action')) {
+            throw new Error('An action goal is already running.');
+        }
         const name = String(message.name || '').trim(), type = String(message.type || '').trim();
         const goal = String(message.goal || '').replace(/\r?\n/g, ' ').replace(/\s+/g, ' ').trim();
-        if (!validName(name)) throw new Error('Select a valid action name.');
-        if (!validType(type, 'action')) throw new Error('Select a valid action type.');
-        if (!goal) throw new Error('Action goal cannot be empty.');
+        if (!validName(name)) {
+            throw new Error('Select a valid action name.');
+        }
+        if (!validType(type, 'action')) {
+            throw new Error('Select a valid action type.');
+        }
+        if (!goal) {
+            throw new Error('Action goal cannot be empty.');
+        }
         const env = { ...process.env, ROS_ACTION_NAME: name, ROS_ACTION_TYPE: type, ROS_ACTION_GOAL: goal };
         const script = rosEnvironment.setupCommand + ' && exec ros2 action send_goal --feedback "$ROS_ACTION_NAME" "$ROS_ACTION_TYPE" "$ROS_ACTION_GOAL"';
         const child = processManager.spawn('bash', ['-c', script], { env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -222,10 +268,16 @@ export class CommunicationDashboard {
             finish('Timed out after ' + timeoutMs / 1000 + ' seconds.', false);
         }, timeoutMs) : undefined;
         const finish = (text: string, success: boolean) => {
-            if (finished) return;
+            if (finished) {
+                return;
+            }
             finished = true;
-            if (timeout) clearTimeout(timeout);
-            if (this.activeProcesses.get(key) === child) this.activeProcesses.delete(key);
+            if (timeout) {
+                clearTimeout(timeout);
+            }
+            if (this.activeProcesses.get(key) === child) {
+                this.activeProcesses.delete(key);
+            }
             this.panel.webview.postMessage({ command: status, running: false, text, success });
         };
         const append = (chunk: Buffer) => {
@@ -240,7 +292,9 @@ export class CommunicationDashboard {
 
     private stopProcess(key: string): void {
         const child = this.activeProcesses.get(key);
-        if (!child) return;
+        if (!child) {
+            return;
+        }
         processManager.terminate(child, 'SIGINT', 2000);
         const status = key === 'publisher' ? 'publishStatus' : key === 'echo' ? 'echoStatus' : key === 'service' ? 'serviceStatus' : 'actionStatus';
         this.panel.webview.postMessage({ command: status, running: true, text: 'Stopping...' });
@@ -454,7 +508,9 @@ window.addEventListener('message',e=>{const m=e.data;
         this.disposed = true;
         for (const key of [...this.activeProcesses.keys()]) {
             const child = this.activeProcesses.get(key);
-            if (child) processManager.terminate(child, 'SIGINT', 1000);
+            if (child) {
+                processManager.terminate(child, 'SIGINT', 1000);
+            }
         }
         this.activeProcesses.clear();
         CommunicationDashboard.panel = undefined;
