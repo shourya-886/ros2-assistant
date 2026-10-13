@@ -191,6 +191,47 @@ export async function activate(context: vscode.ExtensionContext) {
         rosEnvironment.configure(detected.distro, domainId!);
         console.log(`ROS2 Assistant using ROS 2 ${detected.distro}, ROS_DOMAIN_ID=${domainId}`);
 
+        // Change the active ROS domain at any time from the Command Palette.
+        const setDomainIdDisposable = vscode.commands.registerCommand('ros2-assistant.setDomainId', async () => {
+            const enteredDomain = await vscode.window.showInputBox({
+                title: 'ROS 2 Assistant: Set ROS_DOMAIN_ID',
+                prompt: `Current ROS_DOMAIN_ID is ${domainId}. Enter a new value (0-232).`,
+                value: String(domainId),
+                placeHolder: '3',
+                validateInput: value => {
+                    const trimmed = value.trim();
+                    if (!/^\\d+$/.test(trimmed)) {
+                        return 'Enter a whole number between 0 and 232.';
+                    }
+                    const parsed = Number(trimmed);
+                    return Number.isSafeInteger(parsed) && parsed <= 232
+                        ? undefined
+                        : 'ROS_DOMAIN_ID must be between 0 and 232.';
+                },
+                ignoreFocusOut: true
+            });
+
+            if (enteredDomain === undefined) {
+                return;
+            }
+
+            const nextDomainId = Number(enteredDomain.trim());
+            try {
+                rosEnvironment.configure(detected.distro!, nextDomainId);
+                await context.globalState.update('ros2-assistant.domainId', nextDomainId);
+                domainId = nextDomainId;
+                console.log(`ROS2 Assistant switched to ROS_DOMAIN_ID=${domainId}`);
+                vscode.window.showInformationMessage(
+                    `ROS 2 Assistant is now using ROS_DOMAIN_ID=${domainId}. Refresh the Communication Dashboard to load that domain's graph.`
+                );
+            } catch (error) {
+                vscode.window.showErrorMessage(
+                    `Could not change ROS_DOMAIN_ID: ${error instanceof Error ? error.message : String(error)}`
+                );
+            }
+        });
+        context.subscriptions.push(setDomainIdDisposable);
+
         const helloDisposable = vscode.commands.registerCommand('ros2-assistant.helloWorld', () => {
             vscode.window.showInformationMessage('Hello World from ROS2 Assistant!');
         });
