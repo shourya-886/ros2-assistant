@@ -5,6 +5,7 @@ import { rosEnvironment } from './core/rosEnvironment';
 import { LaunchManager } from './launch/launchManager';
 import { LaunchManagerDashboard } from './launch/launchDashboard';
 import { InterfaceExplorerPanel } from './interfaces/interfaceExplorer';
+import { CommunicationDashboard } from './communication/communicationDashboard';
 import { existsSync, readdirSync } from 'fs';
 import * as path from 'path';
 
@@ -241,6 +242,11 @@ export async function activate(context: vscode.ExtensionContext) {
             LaunchManagerDashboard.createOrShow(launchManager!, workspaceRoots);
         });
         context.subscriptions.push(launchManagerDisposable);
+
+        const communicationDashboardDisposable = vscode.commands.registerCommand('ros2-assistant.openCommunicationDashboard', () => {
+            CommunicationDashboard.createOrShow(context.extensionUri);
+        });
+        context.subscriptions.push(communicationDashboardDisposable);
 
         const interfaceExplorerDisposable = vscode.commands.registerCommand('ros2-assistant.openInterfaceExplorer', () => {
             InterfaceExplorerPanel.createOrShow(context.extensionUri);
