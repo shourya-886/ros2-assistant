@@ -299,6 +299,9 @@ export class CommunicationDashboard {
         const append = (chunk: Buffer) => {
             output = (output + chunk.toString()).slice(-14000);
             this.panel.webview.postMessage({ command: status.replace('Status', 'Output'), text: chunk.toString() });
+            if (key === 'service') {
+                this.postServiceDebug('Service process output: ' + chunk.toString().trim());
+            }
         };
         child.stdout?.on('data', append);
         child.stderr?.on('data', append);
@@ -465,6 +468,7 @@ nav{display:flex;gap:7px;margin:18px 0;flex-wrap:wrap}.summary{display:grid;grid
 <div class="actions"><button id="pub-start" class="primary">Publish</button><button id="pub-stop" disabled>Stop</button></div>
 <pre id="pub-output" class="output">Publisher idle.</pre>
 </div></div><div class="card section"><h2>Topic inventory</h2><div id="topic-list"></div></div></section>
+<!-- Services tab: service discovery, request execution, graph relationships, and diagnostic output. -->
 <section id="services" class="view" hidden><div class="grid"><div class="card"><h2>Call Service</h2>
 <label>Service<select id="service-select"><option value="">Select service…</option></select></label><p class="muted" id="service-type">Type: —</p>
 <label>Request YAML<textarea id="service-request" spellcheck="false">{}</textarea></label>
@@ -519,7 +523,9 @@ document.getElementById('pub-topic').addEventListener('change',()=>{document.get
 document.getElementById('pub-type').addEventListener('change',()=>vscode.postMessage({command:'loadTemplate',kind:'msg',type:document.getElementById('pub-type').value}));
 document.getElementById('pub-start').addEventListener('click',()=>vscode.postMessage({command:'publish',topic:document.getElementById('pub-new-topic').value.trim()||document.getElementById('pub-topic').value,type:document.getElementById('pub-type').value,rate:document.getElementById('pub-rate').value,count:document.getElementById('pub-count').value,yaml:document.getElementById('pub-yaml').value}));
 document.getElementById('pub-stop').addEventListener('click',()=>vscode.postMessage({command:'stopPublish'}));
+// Keep the selected service type and request template synchronized with the discovered graph.
 document.getElementById('service-select').addEventListener('change',()=>{const s=graph.services.find(x=>x.name===document.getElementById('service-select').value);document.getElementById('service-type').textContent='Type: '+(s?s.type:'—');if(s&&s.type!=='unknown')vscode.postMessage({command:'loadTemplate',kind:'srv',type:s.type});});
+// Send the selected service and YAML request to the extension host.
 document.getElementById('service-call').addEventListener('click',()=>vscode.postMessage({command:'callService',name:document.getElementById('service-select').value,type:graph.services.find(x=>x.name===document.getElementById('service-select').value)?.type,request:document.getElementById('service-request').value}));
 document.getElementById('action-select').addEventListener('change',()=>{const a=graph.actions.find(x=>x.name===document.getElementById('action-select').value);document.getElementById('action-type').textContent='Type: '+(a?a.type:'—');if(a&&a.type!=='unknown')vscode.postMessage({command:'loadTemplate',kind:'action',type:a.type});});
 document.getElementById('action-send').addEventListener('click',()=>vscode.postMessage({command:'sendGoal',name:document.getElementById('action-select').value,type:graph.actions.find(x=>x.name===document.getElementById('action-select').value)?.type,goal:document.getElementById('action-goal').value}));
