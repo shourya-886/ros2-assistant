@@ -292,6 +292,10 @@ class Ros2TreeDataProvider implements vscode.TreeDataProvider<Ros2TreeItem>, vsc
 
         if (this.currentView === 'root') {
             return Promise.resolve([
+                new Ros2TreeItem('Communication Dashboard', vscode.TreeItemCollapsibleState.None, 'root', {
+                    command: 'ros2-assistant.openCommunicationDashboard',
+                    title: 'Open ROS 2 Communication Dashboard'
+                }, new vscode.ThemeIcon('graph')),
                 new Ros2TreeItem('List Topics', vscode.TreeItemCollapsibleState.None, 'root', {
                     command: 'ros2-assistant.selectItem',
                     title: 'Select Topics View',
