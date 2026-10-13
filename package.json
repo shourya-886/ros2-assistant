@@ -16,6 +16,10 @@
   "contributes": {
     "commands": [
       {
+        "command": "ros2-assistant.setDomainId",
+        "title": "ROS 2 Assistant: Set ROS_DOMAIN_ID"
+      },
+      {
         "command": "ros2-assistant.helloWorld",
         "title": "Hello World"
       },
