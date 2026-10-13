@@ -42,7 +42,30 @@ function validName(value: string): boolean {
     return /^\/[A-Za-z][A-Za-z0-9_]*(\/[A-Za-z][A-Za-z0-9_]*)*$/.test(value);
 }
 function validType(value: string, kind: 'msg' | 'srv' | 'action'): boolean {
-    return new RegExp('^[A-Za-z][A-Za-z0-9_]*/' + kind + '/[A-Za-z][A-Za-z0-9_]* {
+    const parts = value.split('/');
+    return parts.length === 3 && /^[A-Za-z][A-Za-z0-9_]*$/.test(parts[0]) && parts[1] === kind && /^[A-Za-z][A-Za-z0-9_]*$/.test(parts[2]);
+}
+function buildTemplate(definition: string, action = false): string {
+    const fields: string[] = [];
+    for (const raw of definition.split(/\r?\n/)) {
+        if (action && raw.trim() === '---') break;
+        const line = raw.split('#')[0].trim();
+        if (!line || /^\S+\s+\S+\s*=/.test(line) || /^\s/.test(raw)) continue;
+        const parts = line.split(/\s+/);
+        if (parts.length < 2) continue;
+        const type = parts[0];
+        const value = type.endsWith(']') ? '[]' : /^w?string/.test(type) ? "''" : type === 'bool' ? 'false' : /^float(32|64)$/.test(type) ? '0.0' : /^(u?int(8|16|32|64)|byte|char)$/.test(type) ? '0' : '{}';
+        fields.push('  ' + parts[1] + ': ' + value);
+    }
+    return fields.length ? '{\n' + fields.join(',\n') + '\n}' : '{}';
+}
+function runRosEnv(command: string, env: NodeJS.ProcessEnv = process.env, timeout = 12000): Promise<string> {
+    return new Promise((resolve, reject) => {
+        processManager.execFile('bash', ['-c', rosEnvironment.setupCommand + ' && ' + command], { env, timeout, maxBuffer: 2 * 1024 * 1024 }, (error, stdout, stderr) => {
+            if (error) reject(new Error((stderr || error.message || 'ROS command failed').trim())); else resolve(stdout);
+        });
+    });
+}
     private static panel: vscode.WebviewPanel | undefined;
     private readonly disposables: vscode.Disposable[] = [];
     private refreshing = false;
@@ -112,7 +135,7 @@ function validType(value: string, kind: 'msg' | 'srv' | 'action'): boolean {
         if (kind !== 'srv' && kind !== 'action') throw new Error('Unsupported interface kind.');
         if (!validType(type, kind)) throw new Error('Invalid ROS interface type.');
         const env = { ...process.env, ROS_INTERFACE_TYPE: type };
-        const script = 'IFS=/ read -r pkg kind name <<< "$ROS_INTERFACE_TYPE"; IFS=: read -ra prefixes <<< "$AMENT_PREFIX_PATH"; for p in "\${prefixes[@]}"; do f="$p/share/$pkg/$kind/$name.$kind"; if [ -f "$f" ]; then cat "$f"; exit 0; fi; done; echo "Definition not found for $ROS_INTERFACE_TYPE" >&2; exit 1';
+        const script = 'IFS=/ read -r pkg kind name <<< "$ROS_INTERFACE_TYPE"; IFS=: read -ra prefixes <<< "$AMENT_PREFIX_PATH"; for p in "${prefixes[@]}"; do f="$p/share/$pkg/$kind/$name.$kind"; if [ -f "$f" ]; then cat "$f"; exit 0; fi; done; echo "Definition not found for $ROS_INTERFACE_TYPE" >&2; exit 1';
         const definition = await runRosEnv(script, env, 10000);
         this.panel.webview.postMessage({ command: kind === 'srv' ? 'serviceTemplate' : 'actionTemplate', template: buildTemplate(definition, kind === 'action') });
     }
@@ -132,7 +155,7 @@ function validType(value: string, kind: 'msg' | 'srv' | 'action'): boolean {
             'import os,time,yaml,rclpy',
             'from contextlib import suppress',
             'from rosidl_runtime_py.utilities import get_message',
-            'from rosidl_runtime_py.set_message_fields import set_message_fields',
+            'from rosidl_runtime_py.set_message import set_message_fields',
             "topic=os.environ['ROS_TOPIC_NAME']; type_name=os.environ['ROS_MESSAGE_TYPE']",
             "rate=float(os.environ['ROS_PUBLISH_RATE']); count=int(os.environ['ROS_PUBLISH_COUNT'])",
             "payload=yaml.safe_load(os.environ['ROS_MESSAGE_YAML']) or {}",
