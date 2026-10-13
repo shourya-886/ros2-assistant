@@ -218,7 +218,7 @@ export class CommunicationDashboard {
         this.activeProcesses.set(key, child);
         let output = '', finished = false;
         const timeout = timeoutMs ? setTimeout(() => {
-            processManager.terminate(child, 'SIGTERM', 0);
+            processManager.terminate(child, 'SIGTERM', 2000);
             finish('Timed out after ' + timeoutMs / 1000 + ' seconds.', false);
         }, timeoutMs) : undefined;
         const finish = (text: string, success: boolean) => {
@@ -417,7 +417,7 @@ document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>{doc
 document.getElementById('refresh').addEventListener('click',()=>vscode.postMessage({command:'refresh'}));
 document.getElementById('echo-start').addEventListener('click',()=>vscode.postMessage({command:'startEcho',topic:document.getElementById('echo-topic').value}));
 document.getElementById('echo-stop').addEventListener('click',()=>vscode.postMessage({command:'stopEcho'}));
-document.getElementById('pub-topic').addEventListener('change',()=>{const topic=graph.topics.find(x=>x.name===document.getElementById('pub-topic').value);if(topic&&topic.type!=='unknown'){document.getElementById('pub-type').value=topic.type;vscode.postMessage({command:'loadTemplate',kind:'msg',type:topic.type});}});
+document.getElementById('pub-topic').addEventListener('change',()=>{document.getElementById('pub-new-topic').value='';const topic=graph.topics.find(x=>x.name===document.getElementById('pub-topic').value);if(topic&&topic.type!=='unknown'){document.getElementById('pub-type').value=topic.type;vscode.postMessage({command:'loadTemplate',kind:'msg',type:topic.type});}});
 document.getElementById('pub-type').addEventListener('change',()=>vscode.postMessage({command:'loadTemplate',kind:'msg',type:document.getElementById('pub-type').value}));
 document.getElementById('pub-start').addEventListener('click',()=>vscode.postMessage({command:'publish',topic:document.getElementById('pub-new-topic').value.trim()||document.getElementById('pub-topic').value,type:document.getElementById('pub-type').value,rate:document.getElementById('pub-rate').value,count:document.getElementById('pub-count').value,yaml:document.getElementById('pub-yaml').value}));
 document.getElementById('pub-stop').addEventListener('click',()=>vscode.postMessage({command:'stopPublish'}));
@@ -436,7 +436,7 @@ window.addEventListener('message',e=>{const m=e.data;
  else if(m.command==='echoOutput')document.getElementById('echo-output').textContent=(document.getElementById('echo-output').textContent+'\n'+m.text).slice(-12000);
  else if(m.command==='publishStatus'){document.getElementById('pub-start').disabled=m.running;document.getElementById('pub-stop').disabled=!m.running;document.getElementById('pub-output').textContent=m.text;}
  else if(m.command==='publishOutput')document.getElementById('pub-output').textContent=(document.getElementById('pub-output').textContent+'\n'+m.text).slice(-12000);
- else if(m.command==='serviceStatus')document.getElementById('service-output').textContent=m.text;
+ else if(m.command==='serviceStatus'){document.getElementById('service-call').disabled=m.running;document.getElementById('service-output').textContent=m.text;}
  else if(m.command==='serviceOutput')document.getElementById('service-output').textContent=(document.getElementById('service-output').textContent+'\n'+m.text).slice(-12000);
  else if(m.command==='actionStatus'){document.getElementById('action-send').disabled=m.running;document.getElementById('action-cancel').disabled=!m.running;document.getElementById('action-output').textContent=m.text;}
  else if(m.command==='actionOutput')document.getElementById('action-output').textContent=(document.getElementById('action-output').textContent+'\n'+m.text).slice(-12000);
