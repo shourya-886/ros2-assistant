@@ -8,6 +8,12 @@ The extension wraps the standard `ros2` command line tools, so it shows what the
 
 Open the **ROS2 Assistant** icon in the activity bar. The sidebar menu contains:
 
+### Communication Dashboard
+Opens a combined ROS graph dashboard from the Command Palette using **ROS 2 Assistant: Communication Dashboard**. It shows discovered nodes, topics, services and actions, along with inferred publisher/subscriber and service/action relationships. The Topics view supports topic echo and publishing; the Services view supports service calls; and the Actions view supports sending goals. The dashboard refreshes the graph on opening and when you select **Refresh graph**.
+
+### Set ROS_DOMAIN_ID
+Use **ROS 2 Assistant: Set ROS_DOMAIN_ID** from the Command Palette to switch domains after setup. Enter a value from 0 to 232. Active dashboard echo, publish, service and action processes are stopped when the domain changes; refresh the dashboard to load the new domain's graph.
+
 ### List Topics
 Lists the topics visible in the ROS graph (the list refreshes automatically). Click a topic to open a panel that streams `ros2 topic echo` live.
 
@@ -131,13 +137,12 @@ src/
 ## Known limitations
 
 - Linux only. ROS must be installed under `/opt/ros`.
-- There is no command yet to change the `ROS_DOMAIN_ID` after the first-run prompt.
 - Apart from the Launch Manager, every panel sources only `/opt/ros/<distro>/setup.bash`. Message, service or action types that exist only in your own workspace are not found by those panels.
 - The Launch Manager scans the `src/` folder of the folders open in VS Code, so open the workspace root that contains `src/`.
 
 ## Release notes
 
-See [CHANGELOG.md](CHANGELOG.md).
+See the [project releases](https://github.com/shourya-886/ros2-assistant/releases).
 
 ## License
 

@@ -2,9 +2,11 @@ import * as vscode from 'vscode';
 import { ChildProcess } from 'child_process';
 import { formatProcessError, processManager } from './core/processManager';
 import { rosEnvironment } from './core/rosEnvironment';
+import { secureWebviewHtml } from './core/webview';
 import { LaunchManager } from './launch/launchManager';
 import { LaunchManagerDashboard } from './launch/launchDashboard';
 import { InterfaceExplorerPanel } from './interfaces/interfaceExplorer';
+import { buildTemplate, CommunicationDashboard } from './communication/communicationDashboard';
 import { existsSync, readdirSync } from 'fs';
 import * as path from 'path';
 
@@ -55,42 +57,9 @@ function escapeHtml(text: string): string {
     return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-function defaultForType(type: string): string {
-    if (type.endsWith(']')) {
-        return '[]';
-    }
-    if (/^w?string/.test(type)) {
-        return "''";
-    }
-    if (type === 'bool') {
-        return 'false';
-    }
-    if (/^float(32|64)$/.test(type)) {
-        return '0.0';
-    }
-    if (/^(u?int(8|16|32|64)|byte|char)$/.test(type)) {
-        return '0';
-    }
-    return '{}'; // nested message: leave at its defaults
-}
 
-/** Builds a YAML goal template from the goal section of `ros2 interface show <action type>`. */
 export function buildGoalTemplate(interfaceText: string): string {
-    const fields: string[] = [];
-    for (const rawLine of interfaceText.split(/\r?\n/)) {
-        if (rawLine.trim() === '---') {
-            break; // end of the goal section
-        }
-        const line = rawLine.split('#')[0].trim();
-        if (!line || /^\S+\s+\S+\s*=/.test(line) || /^\s/.test(rawLine)) {
-            continue; // blank, comment, constant, or indented line
-        }
-        const parts = line.split(/\s+/);
-        if (parts.length >= 2) {
-            fields.push(`  ${parts[1]}: ${defaultForType(parts[0])}`);
-        }
-    }
-    return fields.length > 0 ? `{\n${fields.join(',\n')}\n}` : '{}';
+    return buildTemplate(interfaceText, true);
 }
 
 /** Finds the type of `actionName` in the output of `ros2 action list -t`. */
@@ -182,10 +151,47 @@ export async function activate(context: vscode.ExtensionContext) {
         rosEnvironment.configure(detected.distro, domainId!);
         console.log(`ROS2 Assistant using ROS 2 ${detected.distro}, ROS_DOMAIN_ID=${domainId}`);
 
-        const helloDisposable = vscode.commands.registerCommand('ros2-assistant.helloWorld', () => {
-            vscode.window.showInformationMessage('Hello World from ROS2 Assistant!');
+        // Change the active ROS domain at any time from the Command Palette.
+        const setDomainIdDisposable = vscode.commands.registerCommand('ros2-assistant.setDomainId', async () => {
+            const enteredDomain = await vscode.window.showInputBox({
+                title: 'ROS 2 Assistant: Set ROS_DOMAIN_ID',
+                prompt: `Current ROS_DOMAIN_ID is ${domainId}. Enter a new value (0-232).`,
+                value: String(domainId),
+                placeHolder: '3',
+                validateInput: value => {
+                    const trimmed = value.trim();
+                    if (!/^\d+$/.test(trimmed)) {
+                        return 'Enter a whole number between 0 and 232.';
+                    }
+                    const parsed = Number(trimmed);
+                    return Number.isSafeInteger(parsed) && parsed <= 232
+                        ? undefined
+                        : 'ROS_DOMAIN_ID must be between 0 and 232.';
+                },
+                ignoreFocusOut: true
+            });
+
+            if (enteredDomain === undefined) {
+                return;
+            }
+
+            const nextDomainId = Number(enteredDomain.trim());
+            try {
+                rosEnvironment.configure(detected.distro!, nextDomainId);
+                await context.globalState.update('ros2-assistant.domainId', nextDomainId);
+                domainId = nextDomainId;
+                CommunicationDashboard.stopActiveProcesses();
+                console.log(`ROS2 Assistant switched to ROS_DOMAIN_ID=${domainId}`);
+                vscode.window.showInformationMessage(
+                    `ROS 2 Assistant is now using ROS_DOMAIN_ID=${domainId}. Refresh the Communication Dashboard to load that domain's graph.`
+                );
+            } catch (error) {
+                vscode.window.showErrorMessage(
+                    `Could not change ROS_DOMAIN_ID: ${error instanceof Error ? error.message : String(error)}`
+                );
+            }
         });
-        context.subscriptions.push(helloDisposable);
+        context.subscriptions.push(setDomainIdDisposable);
 
         const treeDataProvider = new Ros2TreeDataProvider();
         context.subscriptions.push(vscode.window.registerTreeDataProvider('ros2View', treeDataProvider));
@@ -242,6 +248,11 @@ export async function activate(context: vscode.ExtensionContext) {
         });
         context.subscriptions.push(launchManagerDisposable);
 
+        const communicationDashboardDisposable = vscode.commands.registerCommand('ros2-assistant.openCommunicationDashboard', () => {
+            CommunicationDashboard.createOrShow(context.extensionUri);
+        });
+        context.subscriptions.push(communicationDashboardDisposable);
+
         const interfaceExplorerDisposable = vscode.commands.registerCommand('ros2-assistant.openInterfaceExplorer', () => {
             InterfaceExplorerPanel.createOrShow(context.extensionUri);
         });
@@ -274,6 +285,7 @@ class Ros2TreeDataProvider implements vscode.TreeDataProvider<Ros2TreeItem>, vsc
     private currentView: string = 'root';
     private currentItems: string[] = [];
     private refreshInterval: NodeJS.Timeout | undefined;
+    private fetchInProgress = false;
 
     getTreeItem(element: Ros2TreeItem): vscode.TreeItem {
         return element;
@@ -286,6 +298,10 @@ class Ros2TreeDataProvider implements vscode.TreeDataProvider<Ros2TreeItem>, vsc
 
         if (this.currentView === 'root') {
             return Promise.resolve([
+                new Ros2TreeItem('Communication Dashboard', vscode.TreeItemCollapsibleState.None, 'root', {
+                    command: 'ros2-assistant.openCommunicationDashboard',
+                    title: 'Open ROS 2 Communication Dashboard'
+                }, new vscode.ThemeIcon('graph')),
                 new Ros2TreeItem('List Topics', vscode.TreeItemCollapsibleState.None, 'root', {
                     command: 'ros2-assistant.selectItem',
                     title: 'Select Topics View',
@@ -391,7 +407,7 @@ class Ros2TreeDataProvider implements vscode.TreeDataProvider<Ros2TreeItem>, vsc
         this.fetchData();
         this.refreshInterval = setInterval(() => {
             this.fetchData();
-        }, 1000);
+        }, 5000);
     }
 
     private stopPolling() {
@@ -402,7 +418,7 @@ class Ros2TreeDataProvider implements vscode.TreeDataProvider<Ros2TreeItem>, vsc
     }
 
     private fetchData() {
-        if (this.currentView === 'root') {
+        if (this.currentView === 'root' || this.fetchInProgress) {
             return;
         }
 
@@ -419,7 +435,9 @@ class Ros2TreeDataProvider implements vscode.TreeDataProvider<Ros2TreeItem>, vsc
 
         const fullCmd = `bash -c "${rosEnvironment.setupCommand} && ${cmd}"`;
 
-        processManager.exec(fullCmd, { env: process.env }, (error, stdout) => {
+        this.fetchInProgress = true;
+        processManager.exec(fullCmd, { env: process.env, timeout: 10000 }, (error, stdout) => {
+            this.fetchInProgress = false;
             let items: string[] = [];
             if (!error && stdout) {
                 items = stdout.split('\n').map(s => s.trim()).filter(s => s.length > 0);
@@ -466,7 +484,7 @@ class PublishTopicPanel {
 
     private constructor(panel: vscode.WebviewPanel) {
         this._panel = panel;
-        this._panel.webview.html = this._getHtmlForWebview();
+        this._panel.webview.html = secureWebviewHtml(this._panel.webview, this._getHtmlForWebview());
         this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
         this._panel.webview.onDidReceiveMessage(message => {
             if (message.command === 'ready' || message.command === 'refreshTopics') {
@@ -966,7 +984,7 @@ class TopicEchoPanel {
 
     private constructor(panel: vscode.WebviewPanel, private readonly topicName: string) {
         this._panel = panel;
-        this._panel.webview.html = this._getHtmlForWebview(this.topicName);
+        this._panel.webview.html = secureWebviewHtml(this._panel.webview, this._getHtmlForWebview(this.topicName));
 
         this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
 
@@ -1087,6 +1105,9 @@ class TopicEchoPanel {
                 card.className = 'message-card';
                 card.textContent = message.data;
                 outputDiv.appendChild(card);
+                while (outputDiv.children.length > 100) {
+                    outputDiv.removeChild(outputDiv.firstElementChild);
+                }
                 if (autoScrollCheckbox.checked) {
                     outputDiv.scrollTop = outputDiv.scrollHeight;
                 }
@@ -1145,7 +1166,7 @@ class NodeInfoPanel {
 
     private constructor(panel: vscode.WebviewPanel, private readonly nodeName: string) {
         this._panel = panel;
-        this._panel.webview.html = this._getHtmlForWebview(this.nodeName, 'Loading node information...');
+        this._panel.webview.html = secureWebviewHtml(this._panel.webview, this._getHtmlForWebview(this.nodeName, 'Loading node information...'));
 
         this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
 
@@ -1153,10 +1174,10 @@ class NodeInfoPanel {
     }
 
     private _fetchNodeInfo() {
-        const innerCmd = `${rosEnvironment.setupCommand} && ros2 node info ${this.nodeName}`;
-        const cmd = `bash -c "${innerCmd}"`;
+        const env = { ...process.env, ROS_NODE_NAME: this.nodeName };
+        const cmd = `bash -c '${rosEnvironment.setupCommand} && exec ros2 node info \"$ROS_NODE_NAME\"'`;
 
-        processManager.exec(cmd, { env: process.env }, (error, stdout, stderr) => {
+        processManager.exec(cmd, { env }, (error, stdout, stderr) => {
             if (error) {
                 this._panel.webview.postMessage({
                     command: 'nodeInfoData',
@@ -1248,7 +1269,9 @@ class NodeInfoPanel {
                 if (rawSections.length === 0 || rawText.trim() === '') {
                     const card = document.createElement('div');
                     card.className = 'section-card';
-                    card.innerHTML = '<pre>' + (rawText || 'No information returned.') + '</pre>';
+                    const pre = document.createElement('pre');
+                    pre.textContent = rawText || 'No information returned.';
+                    card.appendChild(pre);
                     outputDiv.appendChild(card);
                 } else {
                     rawSections.forEach(sec => {
@@ -1336,7 +1359,7 @@ class ServiceCallPanel {
 
     private constructor(panel: vscode.WebviewPanel, private readonly serviceName: string) {
         this._panel = panel;
-        this._panel.webview.html = this._getHtmlForWebview(this.serviceName, 'Fetching service type...');
+        this._panel.webview.html = secureWebviewHtml(this._panel.webview, this._getHtmlForWebview(this.serviceName, 'Fetching service type...'));
 
         this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
 
@@ -1694,7 +1717,7 @@ class ActionGoalPanel {
 
     private constructor(panel: vscode.WebviewPanel, private readonly actionName: string) {
         this._panel = panel;
-        this._panel.webview.html = this._getHtmlForWebview(this.actionName);
+        this._panel.webview.html = secureWebviewHtml(this._panel.webview, this._getHtmlForWebview(this.actionName));
 
         this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
 
