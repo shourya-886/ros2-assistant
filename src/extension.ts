@@ -200,7 +200,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 placeHolder: '3',
                 validateInput: value => {
                     const trimmed = value.trim();
-                    if (!/^\\d+$/.test(trimmed)) {
+                    if (!/^\d+$/.test(trimmed)) {
                         return 'Enter a whole number between 0 and 232.';
                     }
                     const parsed = Number(trimmed);
