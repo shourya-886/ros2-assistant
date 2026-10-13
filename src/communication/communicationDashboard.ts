@@ -6,8 +6,8 @@ import { rosEnvironment } from '../core/rosEnvironment';
 type GraphSnapshot = {
     nodes: string[];
     topics: Array<{ name: string; type: string; publishers: string[]; subscribers: string[] }>;
-    services: Array<{ name: string; type: string }>;
-    actions: Array<{ name: string; type: string }>;
+    services: Array<{ name: string; type: string; servers: string[]; clients: string[] }>;
+    actions: Array<{ name: string; type: string; servers: string[]; clients: string[] }>;
     errors: string[];
 };
 
@@ -61,7 +61,7 @@ function runRosEnv(command: string, env: NodeJS.ProcessEnv = process.env, timeou
     private disposed = false;
     private readonly activeProcesses = new Map<string, ChildProcess>();
 
-    static createOrShow(extensionUri: vscode.Uri): void {
+    static createOrShow(_extensionUri: vscode.Uri): void {
         if (CommunicationDashboard.panel) {
             CommunicationDashboard.panel.reveal(vscode.ViewColumn.Active);
             return;
@@ -278,27 +278,30 @@ function runRosEnv(command: string, env: NodeJS.ProcessEnv = process.env, timeou
             })));
             const publishers = new Map<string, string[]>();
             const subscribers = new Map<string, string[]>();
-            const nodeServices = new Map<string, string[]>();
+            const serviceServers = new Map<string, string[]>();
+            const serviceClients = new Map<string, string[]>();
+            const actionServers = new Map<string, string[]>();
+            const actionClients = new Map<string, string[]>();
             for (const entry of nodeInfo) {
                 let section = '';
                 for (const raw of lines(entry.info)) {
                     const line = raw.trim();
                     if (/^Publishers:/.test(line)) { section = 'pub'; continue; }
                     if (/^Subscribers:/.test(line)) { section = 'sub'; continue; }
-                    if (/^Service Servers:/.test(line)) { section = 'srv'; continue; }
-                    if (/^(Service Clients|Action Servers|Action Clients):/.test(line)) { section = ''; continue; }
+                    if (/^Service Servers:/.test(line)) { section = 'serviceServer'; continue; }
+                    if (/^Service Clients:/.test(line)) { section = 'serviceClient'; continue; }
+                    if (/^Action Servers:/.test(line)) { section = 'actionServer'; continue; }
+                    if (/^Action Clients:/.test(line)) { section = 'actionClient'; continue; }
                     const match = line.match(/^([^:]+):/);
                     if (!match) { continue; }
                     const name = match[1].trim();
-                    const target = section === 'pub' ? publishers : section === 'sub' ? subscribers : undefined;
+                    const target = section === 'pub' ? publishers : section === 'sub' ? subscribers :
+                        section === 'serviceServer' ? serviceServers : section === 'serviceClient' ? serviceClients :
+                        section === 'actionServer' ? actionServers : section === 'actionClient' ? actionClients : undefined;
                     if (target) {
                         const values = target.get(name) ?? [];
                         values.push(entry.node);
                         target.set(name, values);
-                    } else if (section === 'srv') {
-                        const values = nodeServices.get(name) ?? [];
-                        values.push(entry.node);
-                        nodeServices.set(name, values);
                     }
                 }
             }
@@ -309,8 +312,8 @@ function runRosEnv(command: string, env: NodeJS.ProcessEnv = process.env, timeou
                     publishers: publishers.get(topic.name) ?? [],
                     subscribers: subscribers.get(topic.name) ?? []
                 })),
-                services: services.map(service => ({ ...service, type: service.type })),
-                actions,
+                services: services.map(service => ({ ...service, servers: serviceServers.get(service.name) ?? [], clients: serviceClients.get(service.name) ?? [] })),
+                actions: actions.map(action => ({ ...action, servers: actionServers.get(action.name) ?? [], clients: actionClients.get(action.name) ?? [] })),
                 errors
             };
             this.panel.webview.postMessage({ command: 'graph', graph: snapshot, refreshedAt: new Date().toLocaleTimeString() });
@@ -325,7 +328,7 @@ function runRosEnv(command: string, env: NodeJS.ProcessEnv = process.env, timeou
     private html(): string {
         const nonce = [...Array(32)].map(() => 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'.charAt(Math.floor(Math.random() * 62))).join('');
         this.panel.webview.options = { enableScripts: true };
-        this.panel.webview.html = this.panel.webview.html;
+        
         return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -431,6 +434,11 @@ window.addEventListener('message',e=>{const m=e.data;
 
     private dispose(): void {
         this.disposed = true;
+        for (const key of [...this.activeProcesses.keys()]) {
+            const child = this.activeProcesses.get(key);
+            if (child) processManager.terminate(child, 'SIGINT', 1000);
+        }
+        this.activeProcesses.clear();
         CommunicationDashboard.panel = undefined;
         while (this.disposables.length) {
             this.disposables.pop()?.dispose();
