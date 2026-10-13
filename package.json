@@ -28,6 +28,11 @@
         "command": "ros2-assistant.openLaunchManager",
         "title": "ROS 2 Assistant: Open Launch Manager",
         "icon": "$(rocket)"
+      },
+      {
+        "command": "ros2-assistant.openInterfaceExplorer",
+        "title": "ROS 2 Assistant: Open Interface Explorer",
+        "icon": "$(symbol-interface)"
       }
     ],
     "menus": {

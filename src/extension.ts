@@ -4,6 +4,7 @@ import { formatProcessError, processManager } from './core/processManager';
 import { rosEnvironment } from './core/rosEnvironment';
 import { LaunchManager } from './launch/launchManager';
 import { LaunchManagerDashboard } from './launch/launchDashboard';
+import { InterfaceExplorerPanel } from './interfaces/interfaceExplorer';
 import { existsSync, readdirSync } from 'fs';
 import * as path from 'path';
 
@@ -240,6 +241,11 @@ export async function activate(context: vscode.ExtensionContext) {
             LaunchManagerDashboard.createOrShow(launchManager!, workspaceRoots);
         });
         context.subscriptions.push(launchManagerDisposable);
+
+        const interfaceExplorerDisposable = vscode.commands.registerCommand('ros2-assistant.openInterfaceExplorer', () => {
+            InterfaceExplorerPanel.createOrShow(context.extensionUri);
+        });
+        context.subscriptions.push(interfaceExplorerDisposable);
     } catch (error) {
         console.error('Error during ROS2 Assistant activation:', error);
         vscode.window.showErrorMessage(`ROS2 Assistant failed to start: ${error instanceof Error ? error.message : String(error)}`);
@@ -307,7 +313,11 @@ class Ros2TreeDataProvider implements vscode.TreeDataProvider<Ros2TreeItem>, vsc
                 new Ros2TreeItem('Launch Manager', vscode.TreeItemCollapsibleState.None, 'root', {
                     command: 'ros2-assistant.openLaunchManager',
                     title: 'Open ROS 2 Launch Manager'
-                }, new vscode.ThemeIcon('rocket'))
+                }, new vscode.ThemeIcon('rocket')),
+                new Ros2TreeItem('Interface Explorer', vscode.TreeItemCollapsibleState.None, 'root', {
+                    command: 'ros2-assistant.openInterfaceExplorer',
+                    title: 'Open ROS 2 Interface Explorer'
+                }, new vscode.ThemeIcon('symbol-interface'))
             ]);
         } else {
             if (this.currentItems.length === 0) {
