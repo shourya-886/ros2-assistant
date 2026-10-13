@@ -280,6 +280,7 @@ class Ros2TreeDataProvider implements vscode.TreeDataProvider<Ros2TreeItem>, vsc
     private currentView: string = 'root';
     private currentItems: string[] = [];
     private refreshInterval: NodeJS.Timeout | undefined;
+    private fetchInProgress = false;
 
     getTreeItem(element: Ros2TreeItem): vscode.TreeItem {
         return element;
@@ -401,7 +402,7 @@ class Ros2TreeDataProvider implements vscode.TreeDataProvider<Ros2TreeItem>, vsc
         this.fetchData();
         this.refreshInterval = setInterval(() => {
             this.fetchData();
-        }, 1000);
+        }, 5000);
     }
 
     private stopPolling() {
@@ -412,7 +413,7 @@ class Ros2TreeDataProvider implements vscode.TreeDataProvider<Ros2TreeItem>, vsc
     }
 
     private fetchData() {
-        if (this.currentView === 'root') {
+        if (this.currentView === 'root' || this.fetchInProgress) {
             return;
         }
 
@@ -429,7 +430,9 @@ class Ros2TreeDataProvider implements vscode.TreeDataProvider<Ros2TreeItem>, vsc
 
         const fullCmd = `bash -c "${rosEnvironment.setupCommand} && ${cmd}"`;
 
-        processManager.exec(fullCmd, { env: process.env }, (error, stdout) => {
+        this.fetchInProgress = true;
+        processManager.exec(fullCmd, { env: process.env, timeout: 10000 }, (error, stdout) => {
+            this.fetchInProgress = false;
             let items: string[] = [];
             if (!error && stdout) {
                 items = stdout.split('\n').map(s => s.trim()).filter(s => s.length > 0);
@@ -1097,6 +1100,9 @@ class TopicEchoPanel {
                 card.className = 'message-card';
                 card.textContent = message.data;
                 outputDiv.appendChild(card);
+                while (outputDiv.children.length > 100) {
+                    outputDiv.removeChild(outputDiv.firstElementChild);
+                }
                 if (autoScrollCheckbox.checked) {
                     outputDiv.scrollTop = outputDiv.scrollHeight;
                 }
