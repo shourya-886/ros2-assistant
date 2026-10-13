@@ -274,10 +274,15 @@ export class CommunicationDashboard {
 
             // Node information provides the graph edges. Bound concurrency and node count to
             // avoid spawning an unbounded number of ROS CLI processes on large graphs.
-            const nodeInfo = await Promise.all(nodes.slice(0, 30).map(async node => ({
-                node,
-                info: await safe(`Node ${node}`, () => runRos(`ros2 node info ${JSON.stringify(node)}`, 8000), '')
-            })));
+            const nodeInfo: Array<{ node: string; info: string }> = [];
+            const nodesToInspect = nodes.slice(0, 30);
+            for (let index = 0; index < nodesToInspect.length; index += 5) {
+                const batch = await Promise.all(nodesToInspect.slice(index, index + 5).map(async node => ({
+                    node,
+                    info: await safe('Node ' + node, () => runRos('ros2 node info ' + JSON.stringify(node), 8000), '')
+                })));
+                nodeInfo.push(...batch);
+            }
             const publishers = new Map<string, string[]>();
             const subscribers = new Map<string, string[]>();
             const serviceServers = new Map<string, string[]>();
