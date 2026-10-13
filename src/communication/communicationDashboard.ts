@@ -458,5 +458,3 @@ window.addEventListener('message',e=>{const m=e.data;
         }
     }
 }
-).test(value);
-}
