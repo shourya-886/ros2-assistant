@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { randomBytes } from 'crypto';
 import { ChildProcess } from 'child_process';
 import { formatProcessError, processManager } from './core/processManager';
 import { rosEnvironment } from './core/rosEnvironment';
@@ -56,6 +57,13 @@ function escapeHtml(text: string): string {
     return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+
+function secureWebviewHtml(webview: vscode.Webview, html: string): string {
+    const nonce = randomBytes(16).toString('base64');
+    webview.options = { enableScripts: true };
+    const policy = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">`;
+    return html.replace('</head>', policy + '</head>').replace(/<script>/g, `<script nonce="${nonce}">`);
+}
 function defaultForType(type: string): string {
     if (type.endsWith(']')) {
         return '[]';
@@ -479,7 +487,7 @@ class PublishTopicPanel {
 
     private constructor(panel: vscode.WebviewPanel) {
         this._panel = panel;
-        this._panel.webview.html = this._getHtmlForWebview();
+        this._panel.webview.html = secureWebviewHtml(this._panel.webview, this._getHtmlForWebview());
         this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
         this._panel.webview.onDidReceiveMessage(message => {
             if (message.command === 'ready' || message.command === 'refreshTopics') {
@@ -979,7 +987,7 @@ class TopicEchoPanel {
 
     private constructor(panel: vscode.WebviewPanel, private readonly topicName: string) {
         this._panel = panel;
-        this._panel.webview.html = this._getHtmlForWebview(this.topicName);
+        this._panel.webview.html = secureWebviewHtml(this._panel.webview, this._getHtmlForWebview(this.topicName));
 
         this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
 
@@ -1161,7 +1169,7 @@ class NodeInfoPanel {
 
     private constructor(panel: vscode.WebviewPanel, private readonly nodeName: string) {
         this._panel = panel;
-        this._panel.webview.html = this._getHtmlForWebview(this.nodeName, 'Loading node information...');
+        this._panel.webview.html = secureWebviewHtml(this._panel.webview, this._getHtmlForWebview(this.nodeName, 'Loading node information...'));
 
         this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
 
@@ -1352,7 +1360,7 @@ class ServiceCallPanel {
 
     private constructor(panel: vscode.WebviewPanel, private readonly serviceName: string) {
         this._panel = panel;
-        this._panel.webview.html = this._getHtmlForWebview(this.serviceName, 'Fetching service type...');
+        this._panel.webview.html = secureWebviewHtml(this._panel.webview, this._getHtmlForWebview(this.serviceName, 'Fetching service type...'));
 
         this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
 
@@ -1710,7 +1718,7 @@ class ActionGoalPanel {
 
     private constructor(panel: vscode.WebviewPanel, private readonly actionName: string) {
         this._panel = panel;
-        this._panel.webview.html = this._getHtmlForWebview(this.actionName);
+        this._panel.webview.html = secureWebviewHtml(this._panel.webview, this._getHtmlForWebview(this.actionName));
 
         this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
 
