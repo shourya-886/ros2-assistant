@@ -240,7 +240,7 @@ function runRosEnv(command: string, env: NodeJS.ProcessEnv = process.env, timeou
         const child = this.activeProcesses.get(key);
         if (!child) return;
         processManager.terminate(child, 'SIGINT', 2000);
-        const status = key === 'publisher' ? 'publishStatus' : key === 'service' ? 'serviceStatus' : 'actionStatus';
+        const status = key === 'publisher' ? 'publishStatus' : key === 'echo' ? 'echoStatus' : key === 'service' ? 'serviceStatus' : 'actionStatus';
         this.panel.webview.postMessage({ command: status, running: true, text: 'Stopping...' });
     }
 
@@ -346,7 +346,7 @@ nav{display:flex;gap:7px;margin:18px 0;flex-wrap:wrap}.summary{display:grid;grid
 .item{padding:9px;border-bottom:1px solid var(--vscode-panel-border);font-family:var(--vscode-editor-font-family);font-size:12px;overflow-wrap:anywhere}.item:last-child{border:0}
 .pill{font-size:11px;padding:2px 6px;border-radius:10px;background:var(--vscode-badge-background);color:var(--vscode-badge-foreground)}
 .graph{overflow:auto;border:1px solid var(--vscode-panel-border);border-radius:6px;padding:10px;min-height:180px}.graph svg{min-width:760px;width:100%;height:auto}
-.node{fill:var(--vscode-editorWidget-background);stroke:var(--vscode-charts-blue);stroke-width:1.5}.topic{fill:var(--vscode-editorWidget-background);stroke:var(--vscode-charts-green);stroke-width:1.5}.edge{stroke:var(--vscode-descriptionForeground);stroke-width:1.2;fill:none;opacity:.8}.label{fill:var(--vscode-foreground);font:12px var(--vscode-font-family)}
+.node{fill:var(--vscode-editorWidget-background);stroke:var(--vscode-charts-blue);stroke-width:1.5}.topic{fill:var(--vscode-editorWidget-background);stroke:var(--vscode-charts-green);stroke-width:1.5}.service{fill:var(--vscode-editorWidget-background);stroke:var(--vscode-charts-orange);stroke-width:1.5}.action{fill:var(--vscode-editorWidget-background);stroke:var(--vscode-charts-purple);stroke-width:1.5}.edge{stroke:var(--vscode-descriptionForeground);stroke-width:1.2;fill:none;opacity:.8}.label{fill:var(--vscode-foreground);font:12px var(--vscode-font-family)}
 [hidden]{display:none!important}.error{color:var(--vscode-errorForeground);white-space:pre-wrap}
 </style></head>
 <body>
@@ -383,15 +383,23 @@ const vscode=acquireVsCodeApi();let graph=null;
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const renderList=(id,items,kind)=>{document.getElementById(id).innerHTML=items.length?items.map(x=>'<div class="item"><strong>'+esc(x.name||x)+'</strong> <span class="pill">'+esc(x.type||'')+'</span>'+(kind==='topic'?'<div class="muted">Publishers: '+esc((x.publishers||[]).join(', ')||'—')+' · Subscribers: '+esc((x.subscribers||[]).join(', ')||'—')+'</div>':(kind==='service'||kind==='action')?'<div class="muted">Servers: '+esc((x.servers||[]).join(', ')||'—')+' · Clients: '+esc((x.clients||[]).join(', ')||'—')+'</div>':'')+'</div>').join(''):'<div class="item muted">No entries discovered.</div>';};
 function drawGraph(g){
- const nodes=g.nodes.slice(0,12),topics=g.topics.filter(t=>t.publishers.length||t.subscribers.length).slice(0,12);
- const width=900,row=42,leftX=15,topicX=390,rightX=765,top=20,height=Math.max(170,Math.max(nodes.length,topics.length)*row+30);
- let svg='<svg viewBox="0 0 '+width+' '+height+'" role="img" aria-label="ROS node topic graph">';
- const nodeY=new Map(nodes.map((n,i)=>[n,top+i*row+15])),topicY=new Map(topics.map((t,i)=>[t.name,top+i*row+15]));
- topics.forEach(t=>{const y=topicY.get(t.name);t.publishers.forEach(n=>{if(nodeY.has(n))svg+='<path class="edge" d="M 205 '+nodeY.get(n)+' C 280 '+nodeY.get(n)+', 310 '+y+', 390 '+y+'"/>';});t.subscribers.forEach(n=>{if(nodeY.has(n))svg+='<path class="edge" d="M 510 '+y+' C 600 '+y+', 650 '+nodeY.get(n)+', 695 '+nodeY.get(n)+'"/>';});});
- nodes.forEach(n=>{const y=nodeY.get(n);svg+='<rect class="node" x="'+leftX+'" y="'+(y-13)+'" width="190" height="26" rx="5"/><text class="label" x="'+(leftX+8)+'" y="'+(y+4)+'">'+esc(n.slice(0,28))+'</text>';});
- topics.forEach(t=>{const y=topicY.get(t.name);svg+='<rect class="topic" x="'+topicX+'" y="'+(y-13)+'" width="190" height="26" rx="5"/><text class="label" x="'+(topicX+8)+'" y="'+(y+4)+'">'+esc(t.name.slice(0,28))+'</text>';});
- svg+='<text class="label" x="15" y="12">Publishers</text><text class="label" x="390" y="12">Topics</text><text class="label" x="695" y="12">Subscribers</text></svg>';
- document.getElementById('graph').innerHTML=svg||'No graph edges found.';
+ const endpoints=[
+  ...g.topics.map(x=>({name:x.name,type:'topic',left:x.publishers||[],right:x.subscribers||[]})),
+  ...g.services.map(x=>({name:x.name,type:'service',left:x.clients||[],right:x.servers||[]})),
+  ...g.actions.map(x=>({name:x.name,type:'action',left:x.clients||[],right:x.servers||[]}))
+ ].filter(x=>x.left.length||x.right.length).slice(0,36);
+ const left=[...new Set(endpoints.flatMap(x=>x.left))].slice(0,24);
+ const right=[...new Set(endpoints.flatMap(x=>x.right))].slice(0,24);
+ const row=38,top=28,height=Math.max(190,Math.max(left.length,right.length,endpoints.length)*row+45),width=1000;
+ const ly=new Map(left.map((n,i)=>[n,top+i*row+14])),ry=new Map(right.map((n,i)=>[n,top+i*row+14]));
+ const ey=new Map(endpoints.map((x,i)=>[x.name+'|'+x.type,top+i*row+14]));
+ let svg='<svg viewBox="0 0 '+width+' '+height+'" role="img" aria-label="ROS 2 node and interface graph">';
+ endpoints.forEach(x=>{const y=ey.get(x.name+'|'+x.type);x.left.forEach(n=>{if(ly.has(n))svg+='<path class="edge" d="M 205 '+ly.get(n)+' C 280 '+ly.get(n)+',320 '+y+',395 '+y+'"/>';});x.right.forEach(n=>{if(ry.has(n))svg+='<path class="edge" d="M 605 '+y+' C 680 '+y+',720 '+ry.get(n)+',795 '+ry.get(n)+'"/>';});});
+ left.forEach(n=>{const y=ly.get(n);svg+='<rect class="node" x="10" y="'+(y-12)+'" width="195" height="24" rx="4"/><text class="label" x="18" y="'+(y+4)+'">'+esc(n.slice(0,29))+'</text>';});
+ endpoints.forEach(x=>{const y=ey.get(x.name+'|'+x.type);svg+='<rect class="'+x.type+'" x="395" y="'+(y-12)+'" width="210" height="24" rx="4"/><text class="label" x="403" y="'+(y+4)+'">'+esc(x.type.toUpperCase()+': '+x.name.slice(0,23))+'</text>';});
+ right.forEach(n=>{const y=ry.get(n);svg+='<rect class="node" x="795" y="'+(y-12)+'" width="195" height="24" rx="4"/><text class="label" x="803" y="'+(y+4)+'">'+esc(n.slice(0,29))+'</text>';});
+ svg+='<text class="label" x="10" y="15">Publishers / Clients</text><text class="label" x="395" y="15">Topics / Services / Actions</text><text class="label" x="795" y="15">Subscribers / Servers</text></svg>';
+ document.getElementById('graph').innerHTML=endpoints.length?svg:'No node-interface relationships were reported by the ROS graph.';
 }
 function render(g,updated){
  graph=g;document.getElementById('updated').textContent='Updated '+updated;
