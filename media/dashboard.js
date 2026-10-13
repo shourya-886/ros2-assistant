@@ -1,5 +1,8 @@
 const vscode=acquireVsCodeApi();let graph=null;
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const resizeTemplate=field=>{field.style.height='auto';field.style.height=Math.min(field.scrollHeight,Math.floor(window.innerHeight*0.45))+'px';};
+const setTemplate=(id,value)=>{const field=document.getElementById(id);field.value=value;resizeTemplate(field);};
+document.querySelectorAll('textarea.template-input').forEach(field=>{resizeTemplate(field);field.addEventListener('input',()=>resizeTemplate(field));});
 const renderList=(id,items,kind)=>{document.getElementById(id).innerHTML=items.length?items.map(x=>'<div class="item"><strong>'+esc(x.name||x)+'</strong> <span class="pill">'+esc(x.type||'')+'</span>'+(kind==='topic'?'<div class="muted">Publishers: '+esc((x.publishers||[]).join(', ')||'—')+' · Subscribers: '+esc((x.subscribers||[]).join(', ')||'—')+'</div>':(kind==='service'||kind==='action')?'<div class="muted">Servers: '+esc((x.servers||[]).join(', ')||'—')+' · Clients: '+esc((x.clients||[]).join(', ')||'—')+'</div>':'')+'</div>').join(''):'<div class="item muted">No entries discovered.</div>';};
 function drawGraph(g){
  const endpoints=[
@@ -48,9 +51,9 @@ document.getElementById('action-cancel').addEventListener('click',()=>vscode.pos
 window.addEventListener('message',e=>{const m=e.data;
  if(m.command==='loading'){document.getElementById('refresh').disabled=m.loading;document.getElementById('refresh').textContent=m.loading?'Refreshing…':'Refresh graph';}
  else if(m.command==='graph'){render(m.graph,m.refreshedAt);}
- else if(m.command==='topicTemplate'){if(m.template!==undefined)document.getElementById('pub-yaml').value=m.template;if(m.error)document.getElementById('pub-output').textContent=m.error;}
- else if(m.command==='serviceTemplate')document.getElementById('service-request').value=m.template||'{}';
- else if(m.command==='actionTemplate')document.getElementById('action-goal').value=m.template||'{}';
+ else if(m.command==='topicTemplate'){if(m.template!==undefined)setTemplate('pub-yaml',m.template);if(m.error)document.getElementById('pub-output').textContent=m.error;}
+ else if(m.command==='serviceTemplate')setTemplate('service-request',m.template||'{}');
+ else if(m.command==='actionTemplate')setTemplate('action-goal',m.template||'{}');
  else if(m.command==='echoStatus'){document.getElementById('echo-start').disabled=m.running;document.getElementById('echo-stop').disabled=!m.running;document.getElementById('echo-output').textContent=m.text;}
  else if(m.command==='echoOutput')document.getElementById('echo-output').textContent=(document.getElementById('echo-output').textContent+'\n'+m.text).slice(-12000);
  else if(m.command==='publishStatus'){document.getElementById('pub-start').disabled=m.running;document.getElementById('pub-stop').disabled=!m.running;document.getElementById('pub-output').textContent=m.text;}

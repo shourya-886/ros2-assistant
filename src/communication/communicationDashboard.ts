@@ -431,6 +431,7 @@ nav{display:flex;gap:7px;margin:18px 0;flex-wrap:wrap}.summary{display:grid;grid
 .actions{display:flex;gap:8px;margin:12px 0}
 .card>label,.form-row{display:grid;grid-template-columns:minmax(110px,1fr) minmax(0,1.25fr);align-items:center;gap:8px;margin:10px 0}
 .card>label input,.card>label select,.card>label textarea,.form-row output{box-sizing:border-box;width:100%;min-width:0}
+textarea.template-input{min-height:6rem;max-height:45vh;resize:vertical;overflow-y:auto}
 .form-row output{display:block;padding:6px 8px;border:1px solid var(--vscode-input-border);border-radius:4px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);overflow-wrap:anywhere}
 .item{padding:9px;border-bottom:1px solid var(--vscode-panel-border);font-family:var(--vscode-editor-font-family);font-size:12px;overflow-wrap:anywhere}.item:last-child{border:0}
 .pill{font-size:11px;padding:2px 6px;border-radius:10px;background:var(--vscode-badge-background);color:var(--vscode-badge-foreground)}
@@ -451,20 +452,20 @@ nav{display:flex;gap:7px;margin:18px 0;flex-wrap:wrap}.summary{display:grid;grid
 <label>Message type<input id="pub-type" placeholder="std_msgs/msg/String"></label>
 <label>Publish rate (Hz)<input id="pub-rate" type="number" min="0.1" max="1000" step="0.1" value="1"></label>
 <label>Number of messages<input id="pub-count" type="number" min="1" max="100000" step="1" value="1"></label>
-<label>Message YAML<textarea id="pub-yaml" spellcheck="false">{}</textarea></label>
+<label>Message YAML<textarea id="pub-yaml" class="template-input" spellcheck="false">{}</textarea></label>
 <div class="actions"><button id="pub-start" class="primary">Publish</button><button id="pub-stop" disabled>Stop</button></div>
 <pre id="pub-output" class="output">Publisher idle.</pre>
 </div></div><div class="card section"><h2>Topic inventory</h2><div id="topic-list"></div></div></section>
 <!-- Services tab: discovery, request execution, and graph relationships. -->
 <section id="services" class="view" hidden><div class="grid"><div class="card"><h2>Call Service</h2>
 <label>Service<select id="service-select"><option value="">Select service…</option></select></label><div class="form-row"><span>Type</span><output id="service-type">—</output></div>
-<label>Request YAML<textarea id="service-request" spellcheck="false">{}</textarea></label>
+<label>Request YAML<textarea id="service-request" class="template-input" spellcheck="false">{}</textarea></label>
 <div class="actions"><button id="service-call" class="primary">Call Service</button></div><pre id="service-output" class="output">Ready.</pre>
 </div><div class="card"><h2>Service graph</h2><div id="service-list"></div></div></div>
 </section>
 <section id="actions" class="view" hidden><div class="grid"><div class="card"><h2>Send Action Goal</h2>
 <label>Action<select id="action-select"><option value="">Select action…</option></select></label><div class="form-row"><span>Type</span><output id="action-type">—</output></div>
-<label>Goal YAML<textarea id="action-goal" spellcheck="false">{}</textarea></label>
+<label>Goal YAML<textarea id="action-goal" class="template-input" spellcheck="false">{}</textarea></label>
 <div class="actions"><button id="action-send" class="primary">Send Goal</button><button id="action-cancel" disabled>Cancel Goal</button></div><pre id="action-output" class="output">Ready.</pre>
 </div><div class="card"><h2>Action graph</h2><div id="action-list"></div></div></div></section>
 <section id="nodes" class="view" hidden><div class="card"><h2>Nodes</h2><div id="node-list"></div></div></section>
