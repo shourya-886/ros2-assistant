@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { type ChildProcess } from 'child_process';
 import { processManager } from '../core/processManager';
 import { rosEnvironment } from '../core/rosEnvironment';
 
@@ -41,7 +42,8 @@ export class CommunicationDashboard {
     private readonly disposables: vscode.Disposable[] = [];
     private refreshing = false;
     private disposed = false;
-    private readonly outputLimit = 80;
+    private readonly activeProcesses = new Map<string, ChildProcess>();
+    private selectionVersion = 0;
 
     static createOrShow(extensionUri: vscode.Uri): void {
         if (CommunicationDashboard.panel) {
@@ -64,6 +66,20 @@ export class CommunicationDashboard {
         panel.webview.onDidReceiveMessage(async message => {
             if (message?.command === 'refresh') {
                 await this.refresh();
+            } else if (message?.command === 'loadTemplate') {
+                await this.loadTemplate(String(message.kind || ''), String(message.type || ''));
+            } else if (message?.command === 'publish') {
+                this.publish(message);
+            } else if (message?.command === 'stopPublish') {
+                this.stopProcess('publisher');
+            } else if (message?.command === 'callService') {
+                this.callService(message);
+            } else if (message?.command === 'sendGoal') {
+                this.sendGoal(message);
+            } else if (message?.command === 'cancelGoal') {
+                this.stopProcess('action');
+            } else if (message?.command === 'openEcho') {
+                await vscode.commands.executeCommand('ros2-assistant.inspectItem', { label: String(message.topic || ''), viewType: 'topics' });
             } else if (message?.command === 'open') {
                 const commands: Record<string, string> = {
                     topic: 'ros2-assistant.publishTopic',
