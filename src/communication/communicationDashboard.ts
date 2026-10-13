@@ -19,7 +19,7 @@ function lines(output: string): string[] {
     return output.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
 }
 
-function parseTyped(output: string): Array<{ name: string; type: string }> {
+export function parseTyped(output: string): Array<{ name: string; type: string }> {
     return lines(output).map(line => {
         const match = line.match(/^(\S+)\s+\[(.+)\]$/);
         return match ? { name: match[1], type: match[2] } : { name: line, type: 'unknown' };
@@ -27,14 +27,14 @@ function parseTyped(output: string): Array<{ name: string; type: string }> {
 }
 
 
-function validName(value: string): boolean {
+export function validName(value: string): boolean {
     return /^\/[A-Za-z][A-Za-z0-9_]*(\/[A-Za-z][A-Za-z0-9_]*)*$/.test(value);
 }
-function validType(value: string, kind: 'msg' | 'srv' | 'action'): boolean {
+export function validType(value: string, kind: 'msg' | 'srv' | 'action'): boolean {
     const parts = value.split('/');
     return parts.length === 3 && /^[A-Za-z][A-Za-z0-9_]*$/.test(parts[0]) && parts[1] === kind && /^[A-Za-z][A-Za-z0-9_]*$/.test(parts[2]);
 }
-function buildTemplate(definition: string, action = false): string {
+export function buildTemplate(definition: string, action = false): string {
     const fields: string[] = [];
     for (const raw of definition.split(/\r?\n/)) {
         if (action && raw.trim() === '---') break;
