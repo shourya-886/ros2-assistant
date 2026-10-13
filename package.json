@@ -20,10 +20,6 @@
         "title": "ROS 2 Assistant: Set ROS_DOMAIN_ID"
       },
       {
-        "command": "ros2-assistant.helloWorld",
-        "title": "Hello World"
-      },
-      {
         "command": "ros2-assistant.goBack",
         "title": "Go Back",
         "icon": "$(arrow-left)"

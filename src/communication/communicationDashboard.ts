@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
 import { type ChildProcess } from 'child_process';
-import { processManager } from '../core/processManager';
+import { formatProcessError, processManager } from '../core/processManager';
 import { rosEnvironment } from '../core/rosEnvironment';
+import { secureWebviewHtml } from '../core/webview';
 
 type GraphSnapshot = {
     nodes: string[];
@@ -9,23 +10,11 @@ type GraphSnapshot = {
     services: Array<{ name: string; type: string; servers: string[]; clients: string[] }>;
     actions: Array<{ name: string; type: string; servers: string[]; clients: string[] }>;
     errors: string[];
-    diagnostics?: string[];
 };
 
-function runRos(command: string, timeout = 12000): Promise<string> {
-    return runRosEnv(command, process.env, timeout);
-}
-
-type RosCommandDiagnostics = { stdout: string; stderr: string; error?: string };
-
-function runRosWithDiagnostics(command: string, timeout = 12000): Promise<RosCommandDiagnostics> {
-    return new Promise(resolve => {
-        processManager.execFile('bash', ['-c', rosEnvironment.setupCommand + ' && ' + command], {
-            env: process.env, timeout, maxBuffer: 2 * 1024 * 1024
-        }, (error, stdout, stderr) => resolve({
-            stdout: stdout || '', stderr: stderr || '', error: error ? error.message : undefined
-        }));
-    });
+interface DashboardMessage {
+    command?: string;
+    [key: string]: unknown;
 }
 
 function lines(output: string): string[] {
@@ -67,11 +56,13 @@ export function buildTemplate(definition: string, action = false): string {
     }
     return fields.length ? '{\n' + fields.join(',\n') + '\n}' : '{}';
 }
-function runRosEnv(command: string, env: NodeJS.ProcessEnv = process.env, timeout = 12000): Promise<string> {
+function runRos(command: string, env: NodeJS.ProcessEnv = process.env, timeout = 12000): Promise<string> {
     return new Promise((resolve, reject) => {
-        processManager.execFile('bash', ['-c', rosEnvironment.setupCommand + ' && ' + command], { env, timeout, maxBuffer: 2 * 1024 * 1024 }, (error, stdout, stderr) => {
+        processManager.execFile('bash', ['-c', rosEnvironment.setupCommand + ' && ' + command], {
+            env, timeout, maxBuffer: 2 * 1024 * 1024
+        }, (error, stdout, stderr) => {
             if (error) {
-                reject(new Error((stderr || error.message || 'ROS command failed').trim()));
+                reject(new Error(formatProcessError(command, error, stderr, stdout)));
             } else {
                 resolve(stdout);
             }
@@ -81,12 +72,21 @@ function runRosEnv(command: string, env: NodeJS.ProcessEnv = process.env, timeou
 
 export class CommunicationDashboard {
     private static panel: vscode.WebviewPanel | undefined;
+    private static current: CommunicationDashboard | undefined;
     private readonly disposables: vscode.Disposable[] = [];
     private refreshing = false;
     private disposed = false;
     private readonly activeProcesses = new Map<string, ChildProcess>();
 
-    static createOrShow(_extensionUri: vscode.Uri): void {
+    static stopActiveProcesses(): void {
+        CommunicationDashboard.current?.stopAllProcesses();
+    }
+
+    private stopAllProcesses(): void {
+        for (const key of [...this.activeProcesses.keys()]) { this.stopProcess(key); }
+    }
+
+    static createOrShow(extensionUri: vscode.Uri): void {
         if (CommunicationDashboard.panel) {
             CommunicationDashboard.panel.reveal(vscode.ViewColumn.Active);
             return;
@@ -95,16 +95,16 @@ export class CommunicationDashboard {
             'ros2CommunicationDashboard',
             'ROS 2 Communication',
             vscode.ViewColumn.Active,
-            { enableScripts: true, retainContextWhenHidden: true }
+            { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [vscode.Uri.joinPath(extensionUri, 'media')] }
         );
         CommunicationDashboard.panel = panel;
-        new CommunicationDashboard(panel);
+        CommunicationDashboard.current = new CommunicationDashboard(panel, extensionUri);
     }
 
-    private constructor(private readonly panel: vscode.WebviewPanel) {
+    private constructor(private readonly panel: vscode.WebviewPanel, private readonly extensionUri: vscode.Uri) {
         panel.webview.html = this.html();
         panel.onDidDispose(() => this.dispose(), null, this.disposables);
-        panel.webview.onDidReceiveMessage(async message => {
+        panel.webview.onDidReceiveMessage(async (message: DashboardMessage) => {
             try {
             if (message?.command === 'ready') {
                 // Wait until the webview has installed its message listener before sending graph data.
@@ -135,14 +135,15 @@ export class CommunicationDashboard {
                     service: 'ros2-assistant.inspectService',
                     action: 'ros2-assistant.inspectAction'
                 };
-                const command = commands[message.kind];
+                const kind = String(message.kind || '');
+                const command = commands[kind];
                 if (command) {
-                    if (message.kind === 'topic') {
+                    if (kind === 'topic') {
                         await vscode.commands.executeCommand(command);
                     } else {
                         await vscode.commands.executeCommand(command, {
                             label: String(message.name || ''),
-                            viewType: message.kind === 'service' ? 'services' : 'actions'
+                            viewType: kind === 'service' ? 'services' : 'actions'
                         });
                     }
                 }
@@ -163,7 +164,7 @@ export class CommunicationDashboard {
         }
         const env = { ...process.env, ROS_INTERFACE_TYPE: type };
         const script = 'IFS=/ read -r pkg kind name <<< "$ROS_INTERFACE_TYPE"; IFS=: read -ra prefixes <<< "$AMENT_PREFIX_PATH"; for p in "${prefixes[@]}"; do f="$p/share/$pkg/$kind/$name.$kind"; if [ -f "$f" ]; then cat "$f"; exit 0; fi; done; echo "Definition not found for $ROS_INTERFACE_TYPE" >&2; exit 1';
-        const definition = await runRosEnv(script, env, 10000);
+        const definition = await runRos(script, env, 10000);
         this.panel.webview.postMessage({ command: kind === 'srv' ? 'serviceTemplate' : kind === 'msg' ? 'topicTemplate' : 'actionTemplate', template: buildTemplate(definition, kind !== 'msg') });
     }
 
@@ -181,7 +182,7 @@ export class CommunicationDashboard {
         this.panel.webview.postMessage({ command: 'echoStatus', running: true, text: 'Subscribing to ' + topic + '...' });
     }
 
-    private publish(message: any): void {
+    private publish(message: DashboardMessage): void {
         if (this.activeProcesses.has('publisher')) {
             throw new Error('A publisher is already running.');
         }
@@ -231,7 +232,7 @@ export class CommunicationDashboard {
         this.panel.webview.postMessage({ command: 'publishStatus', running: true, text: 'Publishing to ' + topic + ' at ' + rate + ' Hz...' });
     }
 
-    private callService(message: any): void {
+    private callService(message: DashboardMessage): void {
         if (this.activeProcesses.has('service')) {
             throw new Error('A service call is already running.');
         }
@@ -246,8 +247,6 @@ export class CommunicationDashboard {
         if (!request) {
             throw new Error('Service request cannot be empty.');
         }
-        this.postServiceDebug('Service call requested: ' + name + ' [' + type + ']');
-        this.postServiceDebug('Request YAML: ' + request);
         const env = { ...process.env, ROS_SERVICE_NAME: name, ROS_SERVICE_TYPE: type, ROS_SERVICE_REQUEST: request };
         const script = rosEnvironment.setupCommand + ' && exec ros2 service call "$ROS_SERVICE_NAME" "$ROS_SERVICE_TYPE" "$ROS_SERVICE_REQUEST"';
         const child = processManager.spawn('bash', ['-c', script], { env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -255,7 +254,7 @@ export class CommunicationDashboard {
         this.panel.webview.postMessage({ command: 'serviceStatus', running: true, text: 'Calling ' + name + '...' });
     }
 
-    private sendGoal(message: any): void {
+    private sendGoal(message: DashboardMessage): void {
         if (this.activeProcesses.has('action')) {
             throw new Error('An action goal is already running.');
         }
@@ -300,9 +299,6 @@ export class CommunicationDashboard {
         const append = (chunk: Buffer) => {
             output = (output + chunk.toString()).slice(-14000);
             this.panel.webview.postMessage({ command: status.replace('Status', 'Output'), text: chunk.toString() });
-            if (key === 'service') {
-                this.postServiceDebug('Service process output: ' + chunk.toString().trim());
-            }
         };
         child.stdout?.on('data', append);
         child.stderr?.on('data', append);
@@ -320,27 +316,12 @@ export class CommunicationDashboard {
         this.panel.webview.postMessage({ command: status, running: true, text: 'Stopping...' });
     }
 
-    private postServiceDebug(text: string): void {
-        if (!this.disposed) {
-            this.panel.webview.postMessage({ command: 'serviceDebug', text: '[' + new Date().toLocaleTimeString() + '] ' + text });
-        }
-    }
-
     private async refresh(): Promise<void> {
         if (this.refreshing || this.disposed) {
             return;
         }
         this.refreshing = true;
-        const diagnostics: string[] = [];
-        const debug = (message: string): void => {
-            const entry = '[' + new Date().toLocaleTimeString() + '] ' + message;
-            diagnostics.push(entry);
-            this.postServiceDebug(message);
-        };
         this.panel.webview.postMessage({ command: 'loading', loading: true });
-        debug('Refresh requested.');
-        debug('ROS_DISTRO=' + (process.env.ROS_DISTRO || 'unset') + ', ROS_DOMAIN_ID=' + (process.env.ROS_DOMAIN_ID || 'unset') + ', RMW_IMPLEMENTATION=' + (process.env.RMW_IMPLEMENTATION || 'unset') + ', ROS_LOCALHOST_ONLY=' + (process.env.ROS_LOCALHOST_ONLY || 'unset'));
-        debug('ROS setup: ' + rosEnvironment.setupCommand);
         const errors: string[] = [];
         const safe = async <T>(label: string, task: () => Promise<T>, fallback: T): Promise<T> => {
             try { return await task(); }
@@ -353,24 +334,13 @@ export class CommunicationDashboard {
             const [nodeOutput, topicOutput, serviceOutput, actionOutput] = await Promise.all([
                 safe('Nodes', () => runRos('ros2 node list'), ''),
                 safe('Topics', () => runRos('ros2 topic list -t'), ''),
-                safe('Services', async () => {
-                    const command = 'ros2 service list -t';
-                    debug('$ ' + command);
-                    const result = await runRosWithDiagnostics(command);
-                    debug('Exit: ' + (result.error || '0'));
-                    debug('stdout (' + lines(result.stdout).length + ' lines):\n' + (result.stdout.trim() || '<empty>'));
-                    debug('stderr:\n' + (result.stderr.trim() || '<empty>'));
-                    if (result.error) { throw new Error([result.error, result.stderr.trim()].filter(Boolean).join('\n')); }
-                    return result.stdout;
-                }, ''),
+                safe('Services', () => runRos('ros2 service list -t'), ''),
                 safe('Actions', () => runRos('ros2 action list -t'), '')
             ]);
             const nodes = lines(nodeOutput).slice(0, 60);
             const typedTopics = parseTyped(topicOutput).slice(0, 100);
             const services = parseTyped(serviceOutput).slice(0, 100);
             const actions = parseTyped(actionOutput).slice(0, 100);
-            debug('Parsed service count: ' + services.length);
-            debug(services.length ? services.map(s => s.name + ' [' + s.type + ']').join('\n') : 'No services parsed from command output.');
 
             // Node information provides the graph edges. Bound concurrency and node count to
             // avoid spawning an unbounded number of ROS CLI processes on large graphs.
@@ -379,7 +349,7 @@ export class CommunicationDashboard {
             for (let index = 0; index < nodesToInspect.length; index += 5) {
                 const batch = await Promise.all(nodesToInspect.slice(index, index + 5).map(async node => ({
                     node,
-                    info: await safe('Node ' + node, () => runRos('ros2 node info ' + JSON.stringify(node), 8000), '')
+                    info: await safe('Node ' + node, () => runRos('ros2 node info \"$ROS_NODE_NAME\"', { ...process.env, ROS_NODE_NAME: node }, 8000), '')
                 })));
                 nodeInfo.push(...batch);
             }
@@ -412,7 +382,6 @@ export class CommunicationDashboard {
                     }
                 }
             }
-            debug('Service relationships: ' + services.map(s => s.name + ' | servers=' + (serviceServers.get(s.name) ?? []).join(',') + ' | clients=' + (serviceClients.get(s.name) ?? []).join(',')).join('\n'));
             const snapshot: GraphSnapshot = {
                 nodes,
                 topics: typedTopics.map(topic => ({
@@ -422,8 +391,7 @@ export class CommunicationDashboard {
                 })),
                 services: services.map(service => ({ ...service, servers: serviceServers.get(service.name) ?? [], clients: serviceClients.get(service.name) ?? [] })),
                 actions: actions.map(action => ({ ...action, servers: actionServers.get(action.name) ?? [], clients: actionClients.get(action.name) ?? [] })),
-                errors,
-                diagnostics
+                errors
             };
             this.panel.webview.postMessage({ command: 'graph', graph: snapshot, refreshedAt: new Date().toLocaleTimeString() });
         } finally {
@@ -435,15 +403,12 @@ export class CommunicationDashboard {
     }
 
     private html(): string {
-        const nonce = [...Array(32)].map(() => 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'.charAt(Math.floor(Math.random() * 62))).join('');
-        this.panel.webview.options = { enableScripts: true };
-        
-        return `<!DOCTYPE html>
+        const scriptUri = this.panel.webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'dashboard.js'));
+        const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
 <title>ROS 2 Communication</title>
 <style>
 :root{color-scheme:dark light}body{padding:18px;color:var(--vscode-foreground);font-family:var(--vscode-font-family);background:var(--vscode-editor-background)}
@@ -475,13 +440,13 @@ nav{display:flex;gap:7px;margin:18px 0;flex-wrap:wrap}.summary{display:grid;grid
 <div class="actions"><button id="pub-start" class="primary">Publish</button><button id="pub-stop" disabled>Stop</button></div>
 <pre id="pub-output" class="output">Publisher idle.</pre>
 </div></div><div class="card section"><h2>Topic inventory</h2><div id="topic-list"></div></div></section>
-<!-- Services tab: service discovery, request execution, graph relationships, and diagnostic output. -->
+<!-- Services tab: discovery, request execution, and graph relationships. -->
 <section id="services" class="view" hidden><div class="grid"><div class="card"><h2>Call Service</h2>
 <label>Service<select id="service-select"><option value="">Select service…</option></select></label><p class="muted" id="service-type">Type: —</p>
 <label>Request YAML<textarea id="service-request" spellcheck="false">{}</textarea></label>
 <div class="actions"><button id="service-call" class="primary">Call Service</button></div><pre id="service-output" class="output">Ready.</pre>
 </div><div class="card"><h2>Service graph</h2><div id="service-list"></div></div></div>
-<div class="card section"><h2>Service diagnostics</h2><p class="muted">ROS service discovery and call diagnostics from the extension host.</p><pre id="service-debug" class="output">Waiting for dashboard initialization…</pre></div></section>
+</section>
 <section id="actions" class="view" hidden><div class="grid"><div class="card"><h2>Send Action Goal</h2>
 <label>Action<select id="action-select"><option value="">Select action…</option></select></label><p class="muted" id="action-type">Type: —</p>
 <label>Goal YAML<textarea id="action-goal" spellcheck="false">{}</textarea></label>
@@ -489,83 +454,13 @@ nav{display:flex;gap:7px;margin:18px 0;flex-wrap:wrap}.summary{display:grid;grid
 </div><div class="card"><h2>Action graph</h2><div id="action-list"></div></div></div></section>
 <section id="nodes" class="view" hidden><div class="card"><h2>Nodes</h2><div id="node-list"></div></div></section>
 <div class="section muted" id="errors"></div>
-<script nonce="${nonce}">
-const vscode=acquireVsCodeApi();let graph=null;
-const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const renderList=(id,items,kind)=>{document.getElementById(id).innerHTML=items.length?items.map(x=>'<div class="item"><strong>'+esc(x.name||x)+'</strong> <span class="pill">'+esc(x.type||'')+'</span>'+(kind==='topic'?'<div class="muted">Publishers: '+esc((x.publishers||[]).join(', ')||'—')+' · Subscribers: '+esc((x.subscribers||[]).join(', ')||'—')+'</div>':(kind==='service'||kind==='action')?'<div class="muted">Servers: '+esc((x.servers||[]).join(', ')||'—')+' · Clients: '+esc((x.clients||[]).join(', ')||'—')+'</div>':'')+'</div>').join(''):'<div class="item muted">No entries discovered.</div>';};
-function drawGraph(g){
- const endpoints=[
-  ...g.topics.map(x=>({name:x.name,type:'topic',left:x.publishers||[],right:x.subscribers||[]})),
-  ...g.services.map(x=>({name:x.name,type:'service',left:x.clients||[],right:x.servers||[]})),
-  ...g.actions.map(x=>({name:x.name,type:'action',left:x.clients||[],right:x.servers||[]}))
- ].filter(x=>x.left.length||x.right.length).slice(0,36);
- const left=[...new Set(endpoints.flatMap(x=>x.left))].slice(0,24);
- const right=[...new Set(endpoints.flatMap(x=>x.right))].slice(0,24);
- const row=38,top=28,height=Math.max(190,Math.max(left.length,right.length,endpoints.length)*row+45),width=1000;
- const ly=new Map(left.map((n,i)=>[n,top+i*row+14])),ry=new Map(right.map((n,i)=>[n,top+i*row+14]));
- const ey=new Map(endpoints.map((x,i)=>[x.name+'|'+x.type,top+i*row+14]));
- let svg='<svg viewBox="0 0 '+width+' '+height+'" role="img" aria-label="ROS 2 node and interface graph">';
- endpoints.forEach(x=>{const y=ey.get(x.name+'|'+x.type);x.left.forEach(n=>{if(ly.has(n))svg+='<path class="edge" d="M 205 '+ly.get(n)+' C 280 '+ly.get(n)+',320 '+y+',395 '+y+'"/>';});x.right.forEach(n=>{if(ry.has(n))svg+='<path class="edge" d="M 605 '+y+' C 680 '+y+',720 '+ry.get(n)+',795 '+ry.get(n)+'"/>';});});
- left.forEach(n=>{const y=ly.get(n);svg+='<rect class="node" x="10" y="'+(y-12)+'" width="195" height="24" rx="4"/><text class="label" x="18" y="'+(y+4)+'">'+esc(n.slice(0,29))+'</text>';});
- endpoints.forEach(x=>{const y=ey.get(x.name+'|'+x.type);svg+='<rect class="'+x.type+'" x="395" y="'+(y-12)+'" width="210" height="24" rx="4"/><text class="label" x="403" y="'+(y+4)+'">'+esc(x.type.toUpperCase()+': '+x.name.slice(0,23))+'</text>';});
- right.forEach(n=>{const y=ry.get(n);svg+='<rect class="node" x="795" y="'+(y-12)+'" width="195" height="24" rx="4"/><text class="label" x="803" y="'+(y+4)+'">'+esc(n.slice(0,29))+'</text>';});
- svg+='<text class="label" x="10" y="15">Publishers / Clients</text><text class="label" x="395" y="15">Topics / Services / Actions</text><text class="label" x="795" y="15">Subscribers / Servers</text></svg>';
- document.getElementById('graph').innerHTML=endpoints.length?svg:'No node-interface relationships were reported by the ROS graph.';
-}
-function render(g,updated){
- graph=g;document.getElementById('updated').textContent='Updated '+updated;
- const debugEl=document.getElementById('service-debug');
- if(debugEl && Array.isArray(g.diagnostics)){debugEl.textContent=g.diagnostics.join('\\n') || 'Refresh completed; no service diagnostics were produced.';debugEl.scrollTop=debugEl.scrollHeight;}
- document.getElementById('counts').innerHTML=[['Nodes',g.nodes.length],['Topics',g.topics.length],['Services',g.services.length],['Actions',g.actions.length]].map(([n,c])=>'<div class="card"><div class="muted">'+n+'</div><div class="count">'+c+'</div></div>').join('');
- renderList('topic-list',g.topics,'topic');renderList('service-list',g.services,'service');renderList('action-list',g.actions,'action');renderList('node-list',g.nodes.map(name=>({name,type:'node'})),'node');
- const fill=(id,items)=>{const el=document.getElementById(id),old=el.value;el.innerHTML='<option value="">Select…</option>'+items.map(x=>'<option value="'+esc(x.name)+'">'+esc(x.name)+'</option>').join('');if(items.some(x=>x.name===old))el.value=old;};
- fill('echo-topic',g.topics);fill('pub-topic',g.topics);fill('service-select',g.services);fill('action-select',g.actions);
- renderList('overview-services',g.services.slice(0,8),'service');renderList('overview-actions',g.actions.slice(0,8),'action');drawGraph(g);
- document.getElementById('errors').innerHTML=g.errors.length?'<div class="error">'+g.errors.map(esc).join('\n')+'</div>':'';
-}
-document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x===b));document.querySelectorAll('.view').forEach(x=>x.hidden=x.id!==b.dataset.tab);}));
-
-document.getElementById('refresh').addEventListener('click',()=>vscode.postMessage({command:'refresh'}));
-document.getElementById('echo-start').addEventListener('click',()=>vscode.postMessage({command:'startEcho',topic:document.getElementById('echo-topic').value}));
-document.getElementById('echo-stop').addEventListener('click',()=>vscode.postMessage({command:'stopEcho'}));
-document.getElementById('pub-topic').addEventListener('change',()=>{document.getElementById('pub-new-topic').value='';const topic=graph.topics.find(x=>x.name===document.getElementById('pub-topic').value);if(topic&&topic.type!=='unknown'){document.getElementById('pub-type').value=topic.type;vscode.postMessage({command:'loadTemplate',kind:'msg',type:topic.type});}});
-document.getElementById('pub-type').addEventListener('change',()=>vscode.postMessage({command:'loadTemplate',kind:'msg',type:document.getElementById('pub-type').value}));
-document.getElementById('pub-start').addEventListener('click',()=>vscode.postMessage({command:'publish',topic:document.getElementById('pub-new-topic').value.trim()||document.getElementById('pub-topic').value,type:document.getElementById('pub-type').value,rate:document.getElementById('pub-rate').value,count:document.getElementById('pub-count').value,yaml:document.getElementById('pub-yaml').value}));
-document.getElementById('pub-stop').addEventListener('click',()=>vscode.postMessage({command:'stopPublish'}));
-// Keep the selected service type and request template synchronized with the discovered graph.
-document.getElementById('service-select').addEventListener('change',()=>{const s=graph.services.find(x=>x.name===document.getElementById('service-select').value);document.getElementById('service-type').textContent='Type: '+(s?s.type:'—');if(s&&s.type!=='unknown')vscode.postMessage({command:'loadTemplate',kind:'srv',type:s.type});});
-// Send the selected service and YAML request to the extension host.
-document.getElementById('service-call').addEventListener('click',()=>vscode.postMessage({command:'callService',name:document.getElementById('service-select').value,type:graph.services.find(x=>x.name===document.getElementById('service-select').value)?.type,request:document.getElementById('service-request').value}));
-document.getElementById('action-select').addEventListener('change',()=>{const a=graph.actions.find(x=>x.name===document.getElementById('action-select').value);document.getElementById('action-type').textContent='Type: '+(a?a.type:'—');if(a&&a.type!=='unknown')vscode.postMessage({command:'loadTemplate',kind:'action',type:a.type});});
-document.getElementById('action-send').addEventListener('click',()=>vscode.postMessage({command:'sendGoal',name:document.getElementById('action-select').value,type:graph.actions.find(x=>x.name===document.getElementById('action-select').value)?.type,goal:document.getElementById('action-goal').value}));
-document.getElementById('action-cancel').addEventListener('click',()=>vscode.postMessage({command:'cancelGoal'}));
-const serviceDebug=document.getElementById('service-debug');
-function appendServiceDebug(text){serviceDebug.textContent=(serviceDebug.textContent+'\n'+text).slice(-16000);serviceDebug.scrollTop=serviceDebug.scrollHeight;}
-appendServiceDebug('Webview script initialized; waiting for extension-host graph refresh.');
-document.querySelector('[data-tab="services"]').addEventListener('click',()=>appendServiceDebug('Services tab opened.'));
-window.addEventListener('message',e=>{const m=e.data;
- if(m.command==='serviceDebug'){appendServiceDebug(m.text);}
- else if(m.command==='loading'){document.getElementById('refresh').disabled=m.loading;document.getElementById('refresh').textContent=m.loading?'Refreshing…':'Refresh graph';}
- else if(m.command==='graph'){render(m.graph,m.refreshedAt);}
- else if(m.command==='topicTemplate'){if(m.template!==undefined)document.getElementById('pub-yaml').value=m.template;if(m.error)document.getElementById('pub-output').textContent=m.error;}
- else if(m.command==='serviceTemplate')document.getElementById('service-request').value=m.template||'{}';
- else if(m.command==='actionTemplate')document.getElementById('action-goal').value=m.template||'{}';
- else if(m.command==='echoStatus'){document.getElementById('echo-start').disabled=m.running;document.getElementById('echo-stop').disabled=!m.running;document.getElementById('echo-output').textContent=m.text;}
- else if(m.command==='echoOutput')document.getElementById('echo-output').textContent=(document.getElementById('echo-output').textContent+'\n'+m.text).slice(-12000);
- else if(m.command==='publishStatus'){document.getElementById('pub-start').disabled=m.running;document.getElementById('pub-stop').disabled=!m.running;document.getElementById('pub-output').textContent=m.text;}
- else if(m.command==='publishOutput')document.getElementById('pub-output').textContent=(document.getElementById('pub-output').textContent+'\n'+m.text).slice(-12000);
- else if(m.command==='serviceStatus'){document.getElementById('service-call').disabled=m.running;document.getElementById('service-output').textContent=m.text;}
- else if(m.command==='serviceOutput')document.getElementById('service-output').textContent=(document.getElementById('service-output').textContent+'\n'+m.text).slice(-12000);
- else if(m.command==='actionStatus'){document.getElementById('action-send').disabled=m.running;document.getElementById('action-cancel').disabled=!m.running;document.getElementById('action-output').textContent=m.text;}
- else if(m.command==='actionOutput')document.getElementById('action-output').textContent=(document.getElementById('action-output').textContent+'\n'+m.text).slice(-12000);
- else if(m.command==='operationError'){const id=m.operation==='startEcho'?'echo-output':m.operation==='publish'?'pub-output':m.operation==='callService'?'service-output':m.operation==='sendGoal'?'action-output':'errors';document.getElementById(id).textContent=m.error;}
-});
-vscode.postMessage({command:'ready'});
-</script></body></html>`;
+<script nonce="__NONCE__" src="${scriptUri}"></script></body></html>`;
+        return secureWebviewHtml(this.panel.webview, html);
     }
 
     private dispose(): void {
         this.disposed = true;
+        if (CommunicationDashboard.current === this) { CommunicationDashboard.current = undefined; CommunicationDashboard.panel = undefined; }
         for (const key of [...this.activeProcesses.keys()]) {
             const child = this.activeProcesses.get(key);
             if (child) {

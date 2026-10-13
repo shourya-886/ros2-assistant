@@ -1,12 +1,12 @@
 import * as vscode from 'vscode';
-import { randomBytes } from 'crypto';
 import { ChildProcess } from 'child_process';
 import { formatProcessError, processManager } from './core/processManager';
 import { rosEnvironment } from './core/rosEnvironment';
+import { secureWebviewHtml } from './core/webview';
 import { LaunchManager } from './launch/launchManager';
 import { LaunchManagerDashboard } from './launch/launchDashboard';
 import { InterfaceExplorerPanel } from './interfaces/interfaceExplorer';
-import { CommunicationDashboard } from './communication/communicationDashboard';
+import { buildTemplate, CommunicationDashboard } from './communication/communicationDashboard';
 import { existsSync, readdirSync } from 'fs';
 import * as path from 'path';
 
@@ -58,48 +58,8 @@ function escapeHtml(text: string): string {
 }
 
 
-function secureWebviewHtml(webview: vscode.Webview, html: string): string {
-    const nonce = randomBytes(16).toString('base64');
-    webview.options = { enableScripts: true };
-    const policy = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">`;
-    return html.replace('</head>', policy + '</head>').replace(/<script>/g, `<script nonce="${nonce}">`);
-}
-function defaultForType(type: string): string {
-    if (type.endsWith(']')) {
-        return '[]';
-    }
-    if (/^w?string/.test(type)) {
-        return "''";
-    }
-    if (type === 'bool') {
-        return 'false';
-    }
-    if (/^float(32|64)$/.test(type)) {
-        return '0.0';
-    }
-    if (/^(u?int(8|16|32|64)|byte|char)$/.test(type)) {
-        return '0';
-    }
-    return '{}'; // nested message: leave at its defaults
-}
-
-/** Builds a YAML goal template from the goal section of `ros2 interface show <action type>`. */
 export function buildGoalTemplate(interfaceText: string): string {
-    const fields: string[] = [];
-    for (const rawLine of interfaceText.split(/\r?\n/)) {
-        if (rawLine.trim() === '---') {
-            break; // end of the goal section
-        }
-        const line = rawLine.split('#')[0].trim();
-        if (!line || /^\S+\s+\S+\s*=/.test(line) || /^\s/.test(rawLine)) {
-            continue; // blank, comment, constant, or indented line
-        }
-        const parts = line.split(/\s+/);
-        if (parts.length >= 2) {
-            fields.push(`  ${parts[1]}: ${defaultForType(parts[0])}`);
-        }
-    }
-    return fields.length > 0 ? `{\n${fields.join(',\n')}\n}` : '{}';
+    return buildTemplate(interfaceText, true);
 }
 
 /** Finds the type of `actionName` in the output of `ros2 action list -t`. */
@@ -220,6 +180,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 rosEnvironment.configure(detected.distro!, nextDomainId);
                 await context.globalState.update('ros2-assistant.domainId', nextDomainId);
                 domainId = nextDomainId;
+                CommunicationDashboard.stopActiveProcesses();
                 console.log(`ROS2 Assistant switched to ROS_DOMAIN_ID=${domainId}`);
                 vscode.window.showInformationMessage(
                     `ROS 2 Assistant is now using ROS_DOMAIN_ID=${domainId}. Refresh the Communication Dashboard to load that domain's graph.`
@@ -231,11 +192,6 @@ export async function activate(context: vscode.ExtensionContext) {
             }
         });
         context.subscriptions.push(setDomainIdDisposable);
-
-        const helloDisposable = vscode.commands.registerCommand('ros2-assistant.helloWorld', () => {
-            vscode.window.showInformationMessage('Hello World from ROS2 Assistant!');
-        });
-        context.subscriptions.push(helloDisposable);
 
         const treeDataProvider = new Ros2TreeDataProvider();
         context.subscriptions.push(vscode.window.registerTreeDataProvider('ros2View', treeDataProvider));
@@ -1218,10 +1174,10 @@ class NodeInfoPanel {
     }
 
     private _fetchNodeInfo() {
-        const innerCmd = `${rosEnvironment.setupCommand} && ros2 node info ${this.nodeName}`;
-        const cmd = `bash -c "${innerCmd}"`;
+        const env = { ...process.env, ROS_NODE_NAME: this.nodeName };
+        const cmd = `bash -c '${rosEnvironment.setupCommand} && exec ros2 node info \"$ROS_NODE_NAME\"'`;
 
-        processManager.exec(cmd, { env: process.env }, (error, stdout, stderr) => {
+        processManager.exec(cmd, { env }, (error, stdout, stderr) => {
             if (error) {
                 this._panel.webview.postMessage({
                     command: 'nodeInfoData',
@@ -1313,7 +1269,9 @@ class NodeInfoPanel {
                 if (rawSections.length === 0 || rawText.trim() === '') {
                     const card = document.createElement('div');
                     card.className = 'section-card';
-                    card.innerHTML = '<pre>' + (rawText || 'No information returned.') + '</pre>';
+                    const pre = document.createElement('pre');
+                    pre.textContent = rawText || 'No information returned.';
+                    card.appendChild(pre);
                     outputDiv.appendChild(card);
                 } else {
                     rawSections.forEach(sec => {

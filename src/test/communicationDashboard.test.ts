@@ -1,7 +1,15 @@
 import * as assert from 'assert';
+import { readFileSync } from 'fs';
+import { Script } from 'vm';
+import * as path from 'path';
 import { buildTemplate, parseTyped, validName, validType } from '../communication/communicationDashboard';
 
 suite('ROS 2 communication dashboard helpers', () => {
+    test('dashboard webview script parses as JavaScript', () => {
+        const script = readFileSync(path.resolve(__dirname, '../../media/dashboard.js'), 'utf8');
+        assert.doesNotThrow(() => new Script(script, { filename: 'media/dashboard.js' }));
+    });
+
     test('parses typed ROS graph entries', () => {
         assert.deepStrictEqual(parseTyped([
             '/chatter [std_msgs/msg/String]',
