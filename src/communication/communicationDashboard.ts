@@ -335,13 +335,13 @@ export class CommunicationDashboard {
         const debug = (message: string): void => {
             const entry = '[' + new Date().toLocaleTimeString() + '] ' + message;
             diagnostics.push(entry);
-            debug(message);
+            this.postServiceDebug(message);
         };
         this.panel.webview.postMessage({ command: 'loading', loading: true });
         this.panel.webview.postMessage({ command: 'serviceDebugReset' });
-        this.postServiceDebug('Refresh requested.');
-        this.postServiceDebug('ROS_DISTRO=' + (process.env.ROS_DISTRO || 'unset') + ', ROS_DOMAIN_ID=' + (process.env.ROS_DOMAIN_ID || 'unset') + ', RMW_IMPLEMENTATION=' + (process.env.RMW_IMPLEMENTATION || 'unset') + ', ROS_LOCALHOST_ONLY=' + (process.env.ROS_LOCALHOST_ONLY || 'unset'));
-        this.postServiceDebug('ROS setup: ' + rosEnvironment.setupCommand);
+        debug('Refresh requested.');
+        debug('ROS_DISTRO=' + (process.env.ROS_DISTRO || 'unset') + ', ROS_DOMAIN_ID=' + (process.env.ROS_DOMAIN_ID || 'unset') + ', RMW_IMPLEMENTATION=' + (process.env.RMW_IMPLEMENTATION || 'unset') + ', ROS_LOCALHOST_ONLY=' + (process.env.ROS_LOCALHOST_ONLY || 'unset'));
+        debug('ROS setup: ' + rosEnvironment.setupCommand);
         const errors: string[] = [];
         const safe = async <T>(label: string, task: () => Promise<T>, fallback: T): Promise<T> => {
             try { return await task(); }
@@ -356,11 +356,11 @@ export class CommunicationDashboard {
                 safe('Topics', () => runRos('ros2 topic list -t'), ''),
                 safe('Services', async () => {
                     const command = 'ros2 service list -t';
-                    this.postServiceDebug('$ ' + command);
+                    debug('$ ' + command);
                     const result = await runRosWithDiagnostics(command);
-                    this.postServiceDebug('Exit: ' + (result.error || '0'));
-                    this.postServiceDebug('stdout (' + lines(result.stdout).length + ' lines):\n' + (result.stdout.trim() || '<empty>'));
-                    this.postServiceDebug('stderr:\n' + (result.stderr.trim() || '<empty>'));
+                    debug('Exit: ' + (result.error || '0'));
+                    debug('stdout (' + lines(result.stdout).length + ' lines):\n' + (result.stdout.trim() || '<empty>'));
+                    debug('stderr:\n' + (result.stderr.trim() || '<empty>'));
                     if (result.error) { throw new Error([result.error, result.stderr.trim()].filter(Boolean).join('\n')); }
                     return result.stdout;
                 }, ''),
@@ -370,8 +370,8 @@ export class CommunicationDashboard {
             const typedTopics = parseTyped(topicOutput).slice(0, 100);
             const services = parseTyped(serviceOutput).slice(0, 100);
             const actions = parseTyped(actionOutput).slice(0, 100);
-            this.postServiceDebug('Parsed service count: ' + services.length);
-            this.postServiceDebug(services.length ? services.map(s => s.name + ' [' + s.type + ']').join('\n') : 'No services parsed from command output.');
+            debug('Parsed service count: ' + services.length);
+            debug(services.length ? services.map(s => s.name + ' [' + s.type + ']').join('\n') : 'No services parsed from command output.');
 
             // Node information provides the graph edges. Bound concurrency and node count to
             // avoid spawning an unbounded number of ROS CLI processes on large graphs.
@@ -413,7 +413,7 @@ export class CommunicationDashboard {
                     }
                 }
             }
-            this.postServiceDebug('Service relationships: ' + services.map(s => s.name + ' | servers=' + (serviceServers.get(s.name) ?? []).join(',') + ' | clients=' + (serviceClients.get(s.name) ?? []).join(',')).join('\n'));
+            debug('Service relationships: ' + services.map(s => s.name + ' | servers=' + (serviceServers.get(s.name) ?? []).join(',') + ' | clients=' + (serviceClients.get(s.name) ?? []).join(',')).join('\n'));
             const snapshot: GraphSnapshot = {
                 nodes,
                 topics: typedTopics.map(topic => ({
